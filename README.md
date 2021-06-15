@@ -12,15 +12,15 @@
   $ apt-get update
   $ apt-get install -yq build-essential cmake git jgraph libgmp3-dev libmpfr-dev python2 python3 wget
 ```
-(2). Get PFSan ready
+(2). Get PFPSanitizer ready
 
 (a). Clone fpsan git repo
 ```
-  $ git clone https://github.com/psan2021/psan_fse_2021.git
-  $ cd psan_fse_2021
+  $ git clone git@github.com:rutgers-apl/PFPSanitizer.git
+  $ cd PFPSanitizer
   $ . ./build_prereq.sh 
 ```
-(b). Compile PFSan pass
+(b). Compile PFPSanitizer pass
 
 If your compiler does not support C++11 by default, add the following line to llvm-pass/FPSan/CMakefile
 ```
@@ -39,7 +39,7 @@ otherwise, use the followng line
   $ cd ../..
 ```
 
-(c). Build the PFSan runtime environment
+(c). Build the PFPSanitizer runtime environment
 ```
   $ cd runtime 
   $ make
@@ -48,7 +48,7 @@ otherwise, use the followng line
 
 (d). Set runtime env variable
 ```
-  $ export PFSAN_HOME=<path to psan_fse_2021 directory(/psan_fse_2021)>
+  $ export PFSAN_HOME=<path to PFPSanitizer directory(/PFPSanitizer)>
   $ export LD_LIBRARY_PATH=$PFSAN_HOME/runtime/obj/:$TBB_HOME/build/
 ```
 
@@ -58,7 +58,7 @@ otherwise, use the followng line
   $ python3 correctness_test.py
   $ cd ..
 ```
-  This script will run microbenchmarks with PFSan and report numerical errors. 
+  This script will run microbenchmarks with PFPSanitizer and report numerical errors. 
   It runs total of 43 benchmarks and report numerical errors in these benchmarks, ie, 
   catastrophic cancellation, NaN, Inf, branch flips and integer conversion error.
 
@@ -74,7 +74,7 @@ To run cholesky with gdb, compile runtime with O0
  $ make clean
  $ make
  $ gdb ./cholesky_fp
- $ b handleReal.cpp:1416
+ $ b handleReal.cpp:1335
    Make breakpoint pending on future shared library load? (y or [n]) y
  $ r
  $ call fpsan_trace(buf_id, res)
@@ -87,7 +87,7 @@ To run cholesky with gdb, compile runtime with O0
  450 follow the below instructions.
 
 ```
- $ b handleReal.cpp:1367 if res->error >= 28
+ $ b handleReal.cpp:1287 if res->error >= 28
  $ r
    Start it from the beginning? (y or n) y
  $ call fpsan_trace(buf_id, res)
@@ -97,9 +97,9 @@ To run cholesky with gdb, compile runtime with O0
  First instruction in the trace shows real computation as 2.70400010000000e7 and floating point compuation 
  as 27040000, hence rounding error has occured.
 
-(5). Performance testing (Section 5: (Performance speedup with PFSan compared to FPSanitizer))
+(5). Performance testing (Section 5: (Performance speedup with PFPSanitizer compared to FPSanitizer))
 ```
-  $ cd psan_fse_2021/performance
+  $ cd PFPSanitizer/performance
   $ ./run_perf.sh
   This script will run peformance benchmarks and produce graphs speedup.pdf(Figure 8) 
   and slowdown.pdf(Figure 9). 

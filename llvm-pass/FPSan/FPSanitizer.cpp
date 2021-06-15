@@ -4828,7 +4828,6 @@ bool FPSanitizer::runOnModule(Module &M) {
   }
 
 //  errs()<<"full:"<<M<<"\n";
-#endif
   return true;
 }
 
