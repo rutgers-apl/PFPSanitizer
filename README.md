@@ -1,4 +1,7 @@
-# Tool to accelerate numerical errors detection and debugging by enabling shadow analysis in parallel.
+# PFPSanitizer - A tool to detect numerical errors while performing shadow execution in parallel.
+
+[Work in Progress] Do not use right now.
+
 
  Please note that we have disabled turbo-boost and hyper-threading and our data is 
  generated on a 64 core machine. Generated graphs in step (5) would not match if you
