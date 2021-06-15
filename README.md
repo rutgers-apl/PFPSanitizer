@@ -1,4 +1,4 @@
-# PFPSanitizer - Parallel Shadow Execution Tool for Debugging Numerical Errors 
+# PFPSanitizer - A Parallel Shadow Execution Tool for Debugging Numerical Errors 
 
 [Work in Progress] Do not use right now.
 
