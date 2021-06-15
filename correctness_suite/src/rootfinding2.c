@@ -1,0 +1,34 @@
+#include <stdio.h>
+#include <math.h>
+
+void start_slice(){
+  __asm__ __volatile__ ("");
+}
+
+void end_slice(){
+  __asm__ __volatile__ ("");
+}
+
+// From Kahan "A survey of error analysis"
+int main( int argc, const char* argv[] )
+{
+  start_slice();
+  float fa = 7169.0;
+  float fb = -8686.0;
+  float fc = 2631.0;
+
+  float fbb = fb * fb;
+  float f4ac = 4.0 * fa * fc;
+  float sub = fbb - f4ac;
+  float fsqt = sqrtf(sub);
+  float numer1 = -1.0 * fb + fsqt;
+  float root1 = numer1 / (2.0 * fa);
+  float numer2 = -1.0 * fb - fsqt;
+  float root2 = numer2 / (2.0 * fa);
+  printf("%.50e\n", root1);
+  printf("%.50e\n", root2);
+  end_slice();
+  return 0;
+}
+
+
