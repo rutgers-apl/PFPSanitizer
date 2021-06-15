@@ -1,0 +1,3 @@
+fmod
+sqrt
+sqrtf

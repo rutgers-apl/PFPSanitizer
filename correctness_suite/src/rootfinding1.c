@@ -1,0 +1,35 @@
+#include <stdio.h>
+#include <math.h>
+
+// sqrt(b^2 - 4ac) is correct. Even -b +/- sqrt(b^2 - 4ac) might look correct.
+// But then the roots turn out to be completely wrong.
+void start_slice(){
+  __asm__ __volatile__ ("");
+}
+
+void end_slice(){
+  __asm__ __volatile__ ("");
+}
+
+int main( int argc, const char* argv[] )
+{
+  start_slice();
+  printf("rootfinding test case 2\n");
+  float fa = 1;
+  float fb = 54.32;
+  float fc = 0.1;
+
+  float fbb = fb * fb;
+  float f4ac = 4.0 * fa * fc;
+  float fresult = fbb - f4ac;
+  fresult = sqrtf(fresult);
+  float fnumer1 = -1.0 * fb + fresult;
+  float fnumer2 = -1.0 * fb - fresult;
+  float froot1 = fnumer1 / (2.0 * fa);
+  float froot2 = fnumer2 / (2.0 * fa);
+
+  printf("float root1: %.50e\n", froot1);
+  printf("float root2: %.50e\n", froot2);
+  end_slice();
+  return 0;
+}
