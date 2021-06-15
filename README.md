@@ -1,4 +1,4 @@
-# PFPSanitizer - A tool to detect numerical errors while performing shadow execution in parallel.
+# PFPSanitizer - Parallel Shadow Execution Tool for Debugging Numerical Errors 
 
 [Work in Progress] Do not use right now.
 
