@@ -1,8 +1,5 @@
 # PFPSanitizer - A Parallel Shadow Execution Tool for Debugging Numerical Errors 
 
-[Work in Progress] Do not use right now.
-
-
  Please note that we have disabled turbo-boost and hyper-threading and our data is 
  generated on a 64 core machine. Generated graphs in step (5) would not match if you
  are not using the 64 core machine. 
