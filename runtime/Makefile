@@ -18,8 +18,8 @@ CORRECTNESS := $(if $(SET_CORRECTNESS), $(SET_CORRECTNESS), "CORRECTNESS")
 TRACING := $(if $(SET_TRACING), $(SET_TRACING), "TRACING")
 CXXFLAGS+= -D $(CORRECTNESS) -D $(SELECTIVE) -D $(COUNT_THREADS) -D $(BUFFER_SIZE) -D $(TRACING) -D $(PREC) -fPIC -g -std=c++11 -rdynamic -Wall -lmpfr -pthread -ltbb 
 
-#INCPATH=-I. -I$(TBB_HOME)/include -I$(MPFR_HOME)/src/ 
-INCPATH=-I. -I$(MPFR_HOME)/src/ 
+INCPATH=-I. -I$(TBB_HOME)/include -I$(MPFR_HOME)/src/ 
+#INCPATH=-I. -I$(MPFR_HOME)/src/ 
 ARFLAGS=-rcs
 
 # change these to set the proper directories where each files shoould be
