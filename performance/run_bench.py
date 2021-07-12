@@ -21,7 +21,7 @@ if do_clean and not do_build:
     exit
 
 #set paths
-SPECROOT="spec"
+SPECROOT="bench"
 print "SPECROOT = " + SPECROOT
 
 configs = []
