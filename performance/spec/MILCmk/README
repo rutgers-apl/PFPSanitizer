@@ -1,0 +1,28 @@
+MILCmk - microkernels for the MIMD Lattice Computation (MILC)
+collaboration code.  The MILC code is designed to address fundamental
+questions in high-energy and nuclear physics such as the study of the
+mass spectrum of strongly interacting particles, the weak interactions
+of these particles, and the behavior of strongly interacting matter
+under extreme conditions.  MILC simulates the fundamental theory of
+the strong nuclear force, quantum chromodynamics (QCD), formulated on
+a four-dimensional space-time lattice.  The QCD gluon field is sampled
+using a Hybrid Monte Carlo algorithm which requires the solution of a
+large sparse system at every step.  The microkernels are some of the
+more heavily used routines taken from the QCD Linear Algebra (QLA)
+library developed under SciDAC.  The routines perform some basic math
+operations among arrays of 3x3 complex matrices and length 3, 6 or 12
+complex vectors.
+
+The test programs run benchmarks of 7 kernels for various array sizes
+in single and double precision.  In a real application the typical
+array sizes would correspond to about 16k elements per core, though
+the optimal value will depend greatly on the overall balance of the
+system (including network), and can still vary quite a bit depending
+on the problem being run.  As a representative sample, the mflops
+numbers should be reported for sizes of roughly 1k, 16k and 256k
+elements per core, or a similar range that is appropriate for the
+proposed architecture.  As a further guide, on a current 10PF system,
+a full machine run would have about 12G elements in total.  Weak
+scaling to a 320PF system would give 384G elements for the whole
+system.  If that system had 64k nodes, then the typical size would be
+around 6M elements per node.

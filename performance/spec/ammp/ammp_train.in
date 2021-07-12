@@ -1,0 +1,16 @@
+
+echo off; read all.new.ammp; 
+read new.tether; echo;
+setf mxdq 0.75; 
+setf mmbox 10.;
+setf temp 300;
+seti numstp 125;
+setf bbox 35.;
+use none box bond angle hybrid torsion nonbon;
+monitor;
+echo off; mov vold totalp; add vold totalk;
+echo;
+tpac numstp .00001 temp;
+monitor; 
+use none tether; analyze 0 1000000000;
+exit;
