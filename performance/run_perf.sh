@@ -1,5 +1,5 @@
 #!/bin/bash
 
-python run_spec.py
+python run_bench.py
 python get_slowdown.py
 python get_speedup.py

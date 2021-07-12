@@ -1,0 +1,6 @@
+#!/bin/sh
+
+env="OMP_NUM_THREADS=64:TZ=US/Central:PAMID_VERBOSE=1:RUNJOB_VERBOSE=4:OMP_WAIT_POLICY=active:BG_SMP_FAST_WAKEUP=yes"
+
+qsub -A Catalyst -t 30 --env "$env" -n 1 --proccount 1 --mode c1 ./qla_bench-qla-1.7.1-f3
+qsub -A Catalyst -t 30 --env "$env" -n 1 --proccount 1 --mode c1 ./qla_bench-qla-1.7.1-d3
