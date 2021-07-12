@@ -61,79 +61,37 @@ full_hostname = platform.node()
 hostname=full_hostname
 
 benchmarks=[
-        "art",
-        "ammp",
-        "equake",
-        "lbm",
-        "milc",
-        "sphinx",
         "amg",
         "milcmk",
 ]
 
 folder=[
-        "art",
-        "ammp",
-        "equake",
-        "lbm",
-        "milc",
-        "sphinx",
         "AMG",
         "MILCmk",
         ]
 
 inner_folder=[
-         "",
-         "",
-         "",
-         "",
-         "",
-         "",
         "test",
          "",
         ]
 
 
 executable_orig=[
-        "art",
-        "ammp",
-        "equake",
-        "lbm",
-        "milc",
-        "sphinx",
         "amg",
         "qla_bench-qla-1.7.1-f3",
         ]
 
 executable_pos=[
-        "art_fp",
-        "ammp_fp",
-        "equake_fp",
-        "lbm_fp",
-        "milc_fp",
-        "sphinx_fp",
         "amg_fp",
         "qla_bench-qla-1.7.1-f3_fp",
         ]
 
 inputs_test=[
-        "-scanfile c756hel.in -trainfile1 a10.img -stride 2 -startx 134 -starty 220 -endx 139 -endy 225 -objects 12",
-        "< ammp_test.in",
-        "< inp_train.in",
-        " 20 reference.dat 0 1 100_100_130_cf_a.of",
-        "< su3imp_test.in",
-        "ctlfile_test . args_test.an4",
         " -problem 2 -n 40 40 40",
         "",
         ]
 
 buf_size=[
-        "DEFAULT_BUF_SIZE",
-        "DEFAULT_BUF_SIZE",
-        "DEFAULT_BUF_SIZE",
-        "DEFAULT_BUF_SIZE",
-        "DEFAULT_BUF_SIZE",
-        "DEFAULT_BUF_SIZE",
         "EXPANDED_BUF_SIZE",
         "DEFAULT_BUF_SIZE",
         ]
