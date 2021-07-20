@@ -30,8 +30,13 @@ public:
 
   virtual bool runOnModule(Module &module);
   Function *removeArgs(Function *F, Function *OldF, Value *BufAddr);
+  void createNewBufPhi(BasicBlock *BB);
   void createPhiCounter(BasicBlock *BB);
+  void createPhiCounterConsumer(BasicBlock *BB, Function*);
+  void propagatePhiCounterConsumer1(BasicBlock *BB, Function *F);
+  void propagatePhiCounterConsumer(BasicBlock *BB, Function *F);
   void addIncomingPhi(BasicBlock *BB);
+  void addIncomingPhiC(BasicBlock *BB);
   void propagatePhiCounter(BasicBlock *BB);
   void propagatePhiCounter1(BasicBlock *BB);
   void updateUpdateBlock(BasicBlock *BB);
@@ -42,6 +47,9 @@ public:
   void updateBufferNewBlock(Module *M);
   void updateBufferNewBlockArg(Module *M);
   void handleIdxLoad(Function *F);
+  void splitReadFromBuf(Instruction *I, BasicBlock *BB, Function *F);
+  void loadIdx(Instruction *I, BasicBlock *BB, Function *F);
+  void createUpdateBlockArg1(Function *F);
   Value* createUpdateBlockArg(Value *Addr, 
                               Instruction *I,  
                               Function *F, Value*);
@@ -171,12 +179,18 @@ public:
   GlobalVariable *QIdx;
   GlobalVariable *CQIdx;
   GlobalVariable *SliceFlag;
+  GlobalVariable *CurIndex;
+  GlobalVariable *CCurIndex;
+
   std::map<BasicBlock *, Instruction*> QIdxMap;
-  std::map<Function *, Instruction*> CQIdxMap;
+  std::map<BasicBlock *, Instruction*> CQIdxMap;
   std::map<Function *, Instruction*> SliceFlagMap;
   std::map<Instruction *, Instruction *> FCMPMapPush;
   std::map<Instruction *, Instruction *> FCMPMap;
   std::map<Function *, Value *> BufAddrMap;
+  std::map<Function *, Value *> NewBufAddrMap;
+  std::map<Function *, Value *> BufPtrMap;
+  std::map<Function *, Value *> CBufPtrMap;
   std::map<Function *, Value *> CBufAddrMap;
   std::map<Function *, Value *> BufIndexMap;
   std::map<CallInst *, Instruction *> CallIdxMap;
