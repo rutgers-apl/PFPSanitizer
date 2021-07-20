@@ -79,14 +79,17 @@ const size_t HASH_TABLE_ENTRIES = ((size_t)1024 * (size_t)1024);
 size_t fpcount = 0;
 size_t varCount = 0;
 typedef void (*func_ptr_t)(int);
+func_ptr_t cur_task;
 pthread_t thread[NUM_THREADS];
 concurrent_bounded_queue<std::pair<func_ptr_t, int>> task_queue;
 concurrent_bounded_queue<int> empty_list;
+concurrent_bounded_queue<int> full_list;
 std::map<size_t, void *> clone_func_map[NUM_QUEUES];
 std::map<size_t, int> error_map[NUM_QUEUES];
 std::map<size_t, int> cc_map[NUM_QUEUES];
 __thread size_t __buf_idx;
 
+bool startSlice = false;
 bool m_start_slice = false;
 size_t countFInst = 0;
 FILE *m_errfile_c;

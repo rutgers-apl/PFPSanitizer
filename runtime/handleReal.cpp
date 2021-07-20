@@ -292,9 +292,9 @@ static void *worker(void *arg) {
       event.first(event.second);
 
       if (DEBUG_PROTO_C) {
-        std::cout<<"consumer empty_list: pushing:"<<event.second<<"\n";
+        std::cout<<"consumer empty_list: pushing:"<<__buf_idx<<"\n";
       }
-      empty_list.push(event.second);
+      empty_list.push(__buf_idx);
     }
 #endif
   }
@@ -379,9 +379,44 @@ extern "C" void fpsan_slice_end(func_ptr_t slice_shadow) {
   slice_shadow(p_queue_idx);
   empty_list.push(p_queue_idx);
 #else  
-  task_queue.push({slice_shadow, p_queue_idx});
+  if(!startSlice){
+    if (DEBUG_PROTO_P) {
+      printf("producer: pushing task %p, with queue id:%d\n", slice_shadow,
+          p_queue_idx);
+    }
+    task_queue.push({slice_shadow, p_queue_idx});
+  }
+  else{
+    startSlice = false;
+    full_list.push(p_queue_idx);
+  }
 #endif
   p_queue_idx = -1;
+}
+
+
+//This function is called by producer once buf index reaches the BUF_SIZE
+extern "C" double* fpsanx_slice_end_interim() {
+  // producer stalls if all queues are full, pop blocks entil item is available
+  if(!startSlice){
+    task_queue.push({cur_task, p_queue_idx});
+    startSlice = true;
+  }
+  else{
+    full_list.push(p_queue_idx);
+  }
+  empty_list.pop(p_queue_idx);
+  //wait till task has finished reading the buf
+  return &queue[p_queue_idx][0];
+}
+
+//This function is called by consumer once buf index reaches the BUF_SIZE
+extern "C" double* fpsanx_shadow_task_interim(){
+  int cur = 0;
+  empty_list.push(__buf_idx);
+  full_list.pop(cur);
+  __buf_idx = cur;
+  return &queue[__buf_idx][0];
 }
 
 /* If an application calls a library function indirectly, then
@@ -446,6 +481,10 @@ extern "C" void fpsan_shadow_slice_end(int buf_id) {
   nanCount[buf_id].index = 0;
   flipsCount[buf_id].index = 0;
   ccCount[buf_id].index = 0;
+}
+
+extern "C" void fpsan_slice_start(func_ptr_t slice_shadow) {
+  cur_task = slice_shadow;
 }
 
 /* This function is called when a shadow slice starts executing.

@@ -6,24 +6,16 @@
 #include "llvm/IR/ConstantFolder.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Analysis/CFG.h"
+#include "llvm/Support/CommandLine.h"
 #include <set>
 
 #define DEBUG_P 0
 
-void FPSanitizer::addFunctionsToList(std::string FN) {
-  std::ofstream myfile;
-  myfile.open("functions.txt", std::ios::out | std::ios::app);
-  if (isListedFunction(FN, "forbid.txt"))
-    return;
-  if (myfile.is_open()) {
-    myfile << FN;
-    myfile << "\n";
-    myfile.close();
-  }
-}
+static cl::opt<int> ClBufSize(
+    "buf-size", cl::init(8000000),
+    cl::desc("buf size to communicate with producer and consumers"),
+    cl::Hidden);
 
-// check name of the function and check if it is in list of functions given by
-// developer and return true else false.
 bool FPSanitizer::isListedFunction(StringRef FN, std::string FileName) {
   std::ifstream infile(FileName);
   std::string line;
@@ -479,9 +471,6 @@ void FPSanitizer::createGEP(Function *F, AllocaInst *Alloca, long TotalAlloca) {
         Value *Addr = LI->getPointerOperand();
         bool BTFlag = false;
 
-        if (BitCastInst *BI = dyn_cast<BitCastInst>(Addr)) {
-          //BTFlag = checkIfBitcastFromFP(BI);
-        }
         if (isFloatType(LI->getType()) || BTFlag) {
           if (index - 1 > TotalAlloca) {
             errs() << "Error:\n\n\n index > TotalAlloca " << index << ":"
@@ -776,7 +765,7 @@ void FPSanitizer::createGEP(Function *F, AllocaInst *Alloca, long TotalAlloca) {
           Value *IncValue = PN->getIncomingValue(PI);
 
           if (IncValue == PN)
-            continue; 
+            continue; // TODO
           if (isa<ConstantFP>(IncValue)) {
             if (index - 1 > TotalAlloca) {
               errs() << "Error:\n\n\n index > TotalAlloca " << index << ":"
@@ -1083,15 +1072,6 @@ Instruction *FPSanitizer::getNextInstructionNotPhi(Instruction *I,
   return Next;
 }
 
-void FPSanitizer::findInterestingFunctions(Function *F) {
-
-  long TotalFPInst = getTotalFPInst(F);
-  if (TotalFPInst > 0) {
-    std::string name = F->getName();
-    addFunctionsToList(name);
-  }
-}
-
 void FPSanitizer::handleFuncShadowMainInit(Function *F) {
   Function::iterator Fit = F->begin();
   BasicBlock &BB = *Fit;
@@ -1113,7 +1093,6 @@ void FPSanitizer::handleFuncShadowMainInit(Function *F) {
   IRBuilder<> IRB(Last);
   Value *Idx = BufIdxMap.at(F);
   Finish = M->getOrInsertFunction("fpsan_finish_shadow", VoidTy, Int32Ty);
-//  IRB.CreateCall(Finish, {Idx});
 }
 
 void FPSanitizer::handleFuncMainInit(Function *F) {
@@ -1131,6 +1110,13 @@ void FPSanitizer::handleFuncMainInit(Function *F) {
   IRBuilder<> IRB(First);
   Finish = M->getOrInsertFunction("fpsan_init", VoidTy);
   IRB.CreateCall(Finish, {});
+
+  Finish = M->getOrInsertFunction("malloc", PtrVoidTy, Int64Ty);
+  Value *curMalloc = IRB.CreateCall(Finish, {ConstantInt::get(Int64Ty, 8)});
+  BitCastInst *BCToAddr = new BitCastInst(
+      curMalloc, PointerType::getUnqual(Type::getDoubleTy(M->getContext())), "",
+      First);
+  IRB.CreateStore(BCToAddr, CurIndex, "my_store_idx");
 }
 
 void FPSanitizer::handleStartSliceC(Function *F) {
@@ -1156,40 +1142,17 @@ void FPSanitizer::handleStartSliceC(Function *F) {
     A = &*I;
   }
   IntegerType *Int32Ty = Type::getInt32Ty(M->getContext());
+  IntegerType *Int64Ty = Type::getInt64Ty(M->getContext());
   IRBuilder<> IRB(First);
   Finish = M->getOrInsertFunction("fpsan_shadow_slice_start", VoidTy, A->getType());
   IRB.CreateCall(Finish, {A});
-}
 
-void FPSanitizer::handleEndSliceC(Function *F) {
-  Function::iterator Fit = F->begin();
-  BasicBlock &BB = *Fit;
-  BasicBlock::iterator BBit = BB.begin();
-  Instruction *First = &*BBit;
-
-  Module *M = F->getParent();
-
-  Type *VoidTy = Type::getVoidTy(M->getContext());
-  Type *PtrVoidTy = PointerType::getUnqual(Type::getInt8Ty(M->getContext()));
-
-  Instruction *Last;
-  for (BasicBlock &BB : *F) {
-    if (ReturnInst *RI = dyn_cast<ReturnInst>(BB.getTerminator())) {
-      Last = RI;
-    }
-  }
-  Argument *A;
-  for (Function::arg_iterator I = F->arg_begin(), E = F->arg_end(); I != E;
-       ++I) {
-    A = &*I;
-  }
-  IntegerType *Int32Ty = Type::getInt32Ty(M->getContext());
-  IntegerType *Int64Ty = Type::getInt64Ty(M->getContext());
-  IRBuilder<> IRB(First);
-  Finish =
-      M->getOrInsertFunction("fpsan_shadow_slice_end", VoidTy, A->getType());
-  IRB.CreateCall(Finish, {A});
-  IRB.CreateStore(ConstantInt::get(Int64Ty, 0), CQIdx, "my_store_idx");
+  Finish = M->getOrInsertFunction("malloc", PtrVoidTy, Int64Ty);
+  Value *curMalloc = IRB.CreateCall(Finish, {ConstantInt::get(Int64Ty, 8)});
+  BitCastInst *BCToAddr = new BitCastInst(
+      curMalloc, PointerType::getUnqual(Type::getDoubleTy(M->getContext())), "",
+      First);
+  IRB.CreateStore(BCToAddr, CCurIndex, "my_store_idx");
 }
 
 void FPSanitizer::handleStartSliceCallInstP(CallInst *CI, Function *F) {
@@ -1206,8 +1169,7 @@ void FPSanitizer::handleStartSliceCallInstP(CallInst *CI, Function *F) {
   IntegerType *Int32Ty = Type::getInt32Ty(M->getContext());
   IntegerType *Int64Ty = Type::getInt64Ty(M->getContext());
   Type *PtrVoidTy = PointerType::getUnqual(Type::getInt8Ty(M->getContext()));
-  Type *PtrDoubleTy =
-      PointerType::getUnqual(Type::getDoubleTy(M->getContext()));
+  Type *PtrDoubleTy = PointerType::getUnqual(Type::getDoubleTy(M->getContext()));
 
   for (auto &I : BB) {
     if (CallInst *CI = dyn_cast<CallInst>(&I)) {
@@ -1217,11 +1179,15 @@ void FPSanitizer::handleStartSliceCallInstP(CallInst *CI, Function *F) {
       }
     }
   }
-  IRBuilder<> IRB(First->getNextNode());
+  IRBuilder<> IRB(CI->getNextNode());
+  Function *ShadowFunc = CloneFuncMap.at(F);
+  BitCastInst *BCToAddr = new BitCastInst(
+      ShadowFunc, PointerType::getUnqual(Type::getInt8Ty(M->getContext())), "",
+      CI);
 
   IRB.CreateStore(ConstantInt::get(Int8Ty, 1), SliceFlag, "my_slice_flag");
-  Finish = M->getOrInsertFunction("fpsan_slice_start", VoidTy, Int32Ty);
-//  IRB.CreateCall(Finish, {Idx});
+  Finish = M->getOrInsertFunction("fpsan_slice_start", VoidTy, PtrVoidTy);
+  IRB.CreateCall(Finish, {BCToAddr});
 }
 
 void FPSanitizer::handleEndSliceCallInstP(CallInst *CI, Function *F) {
@@ -1394,6 +1360,7 @@ void FPSanitizer::handleICallInstProducer(CallInst *CI, BasicBlock *BasicB, Func
   Value *BufAddr = BufAddrMap.at(F);
   Value *PtrToInt = IRB.CreatePtrToInt(CI->getCalledOperand(), Int64Ty, "my_ptr_int");
   Value *FPVal = IRB.CreateUIToFP(PtrToInt,  Type::getDoubleTy(M->getContext()), "my_si_fp");
+  //      IRB.CreateCall(UpdateBufferFunc, {FPVal, BufAddr});
   OldBB = I->getParent();
   Cont = OldBB->splitBasicBlock(CI, "split");
   createUpdateBlock(FPVal, BufAddr, I, OldBB, Cont, F);
@@ -1523,7 +1490,6 @@ void FPSanitizer::handleCallInst(CallInst *CI, BasicBlock *BB, Function *F) {
     }
   }
   
-
   // replace the call instruction with the shadow function call instruction
   if (CloneFuncMap.count(Callee) != 0) {
     Function *ShadowFunc = CloneFuncMap.at(Callee);
@@ -2035,7 +2001,6 @@ void FPSanitizer::handleStoreProducer(StoreInst *SI, BasicBlock *BB,
   ConstantInt *lineNumber = ConstantInt::get(Int32Ty, lineNum);
   bool BTFlag = false;
   Type *OpTy = OP->getType();
-  // TODO: do we need to check for bitcast for store?
   int fType = 0;
   if (isFloatType(StoreTy) || StoreTy == MPtrTy || BTFlag) {
     Value *InsIndex;
@@ -2127,12 +2092,6 @@ void FPSanitizer::handleStore(StoreInst *SI, BasicBlock *BB, Function *F) {
         Value *ToAddrInt = IRB.CreateFPToUI(ToAddr,  Type::getInt64Ty(M->getContext()), "my_si_fp");
         IRB.CreateCall(SetRealTemp, {Idx, ToAddrInt, OP, instId, lineNumber});
       }
-      // TODO: How to handle such cases in a better way?
-      /*
-         %119 = bitcast double* %118 to i64*, !dbg !835
-          %120 = bitcast i64* %119 to i8*
-        store i64 %117, i64* %119, align 8, !dbg !835, !tbaa !309
-      */
       else if (isDouble(StoreTy) || fType == 2) {
         SetRealTemp = M->getOrInsertFunction("fpsan_store_shadow_dconst", VoidTy, Int32Ty,
                                    Int64Ty, OpTy, instId->getType(), Int32Ty);
@@ -2420,24 +2379,15 @@ void FPSanitizer::handleStoreIdxProducerCallInst(Instruction *Ins, BasicBlock *B
     }
   }
 
-  bool flag = false;
-  CallInst *CI = dyn_cast<CallInst>(Ins);
-  Function *Callee = CI->getCalledFunction();
-  size_t NumOperands = CI->getNumArgOperands();
-  if (std::find(SliceList.begin(), SliceList.end(), Callee) != SliceList.end()) {
-    for (int i = 0; i < NumOperands; i++) {
-      Value *Op = CI->getArgOperand(i);
-      if(isFloatType(Op->getType())){ 
-        flag = true;
+  for (auto &I : *BB) {
+    if (CallInst *CI = dyn_cast<CallInst>(&I)) {
+      Function *Callee = CI->getCalledFunction();
+      if (Callee) {
+        if (Callee->getName().startswith("fpsan_slice_end")) {
+//          Ins = I.getPrevNode();
+        }
       }
     }
-  }
-  // We want to push arguments only we called function is a slice, otherwise arguments will be propagated
-  // via temporary entry. 
-  if (std::find(SliceList.begin(), SliceList.end(), Callee) != SliceList.end()) {
-    Value *BufAddr = BufAddrMap.at(F);
-    Counter = createUpdateBlockArg(BufAddr, Ins, F, Counter);
-    AllBranchList.push_back(dyn_cast<Instruction>(CI));
   }
 
   IRB.CreateStore(Counter, QIdx, "my_store_idx");
@@ -2489,6 +2439,78 @@ void FPSanitizer::handleStoreIdxProducer(Instruction *Ins, BasicBlock *BB, Funct
   IRB.CreateStore(Counter, QIdx, "my_store_idx");
 }
 
+void FPSanitizer::createUpdateBlock(Value *val, Value *Addr, Instruction *I, BasicBlock *OldB, BasicBlock *ContB, Function *F) {
+  if (BranchInst *BI = dyn_cast<BranchInst>(I)) {
+    if (std::find(AllBranchList.begin(), AllBranchList.end(), I) != AllBranchList.end()) {
+      return;
+    }
+  }
+  else if (SwitchInst *BI = dyn_cast<SwitchInst>(I)) {
+    if (std::find(AllBranchList.begin(), AllBranchList.end(), I) != AllBranchList.end()) {
+      return;
+    }
+  }
+  Module *M = F->getParent();
+  Type *VoidTy = Type::getVoidTy(M->getContext());
+  IntegerType *Int8Ty = Type::getInt8Ty(M->getContext());
+  IntegerType *Int32Ty = Type::getInt32Ty(M->getContext());
+  IntegerType *Int64Ty = Type::getInt64Ty(M->getContext());
+  IntegerType *Int1Ty = Type::getInt1Ty(M->getContext());
+  Type *PtrDoubleTy = PointerType::getUnqual(Type::getDoubleTy(M->getContext()));
+  Type *PtrVoidTy = PointerType::getUnqual(Type::getInt8Ty(M->getContext()));
+
+  BasicBlock *NewBB = BasicBlock::Create(M->getContext(), "u_cmp", F);
+
+  //remove old branch instruction and update with new branch instruction
+  Instruction *BrInst = OldB->getTerminator();
+  BrInst->eraseFromParent();
+
+  BranchInst *BJCmp = BranchInst::Create(NewBB, OldB);
+  AllBranchList.push_back(dyn_cast<Instruction>(BJCmp));
+  IRBuilder<> IRBE(NewBB);
+
+  BasicBlock *UpdateB = BasicBlock::Create(M->getContext(), "update", F);
+  BasicBlock *UpdateBCmp = BasicBlock::Create(M->getContext(), "updatecmp", F);
+  BasicBlock *UpdateNew = BasicBlock::Create(M->getContext(), "updatenew", F);
+  Value *SLiceF = SliceFlagMap.at(F);
+
+  Value* Cond = IRBE.CreateICmp(ICmpInst::ICMP_EQ, SLiceF, ConstantInt::get(Int8Ty, 1));
+  BranchInst *BInst = BranchInst::Create(/*ifTrue*/UpdateBCmp, /*ifFalse*/ContB, Cond, NewBB);
+  AllBranchList.push_back(dyn_cast<Instruction>(BInst));
+
+  IRBuilder<> IRB(UpdateB);
+
+  IRBuilder<> IRBCC(UpdateNew);
+  Instruction *StoreIns = IRBCC.CreateStore(ConstantInt::get(Int64Ty, 0), QIdx, "my_store_idx");
+
+  FuncInit = M->getOrInsertFunction("fpsanx_slice_end_interim", PtrDoubleTy);
+  Value *BufAddr = IRBCC.CreateCall(FuncInit, {});
+  IRBCC.CreateStore(BufAddr, CurIndex, "my_store_idx");
+  NewBufAddrMap.insert(std::pair<Function *, Value *>(F, BufAddr));
+  BranchInst *BInst2 = BranchInst::Create(UpdateB, UpdateNew);
+  AllBranchList.push_back(dyn_cast<Instruction>(BInst2));
+
+  Value *NewAddr = IRB.CreateLoad(PtrDoubleTy, CurIndex, "my_load_idx");
+  Value *Counter = IRB.CreateLoad(IRB.getInt64Ty(), QIdx, "my_load_idx");
+  Value *GEP = IRB.CreateGEP(Type::getDoubleTy(M->getContext()), NewAddr, Counter, "my_gep_buf");
+  Value *ValStore = IRB.CreateStore(val, GEP, "my_store_buf");
+  if(DEBUG_P){
+    FuncInit = M->getOrInsertFunction("fpsanx_push_print", VoidTy, val->getType(), Counter->getType(), PtrDoubleTy);
+    IRB.CreateCall(FuncInit, {val, Counter, GEP});
+  }
+  Value *Add = IRB.CreateAdd(Counter, ConstantInt::get(Int64Ty, 1), "my_incr_idx");
+  IRB.CreateStore(Add, QIdx, "my_store_idx");
+  BranchInst *BI = BranchInst::Create(ContB, UpdateB);
+  AllBranchList.push_back(dyn_cast<Instruction>(BI));
+
+  IRBuilder<> IRBC(UpdateBCmp);
+  Value *CounterN = IRBC.CreateLoad(IRB.getInt64Ty(), QIdx, "my_load_idx");
+  Value* CCond = IRBC.CreateICmp(ICmpInst::ICMP_ULT, CounterN, ConstantInt::get(Int64Ty, ClBufSize));
+  BranchInst *BInst1 = BranchInst::Create(/*ifTrue*/UpdateB, /*ifFalse*/UpdateNew, CCond, UpdateBCmp);
+  AllBranchList.push_back(dyn_cast<Instruction>(BInst1));
+
+}
+
 void FPSanitizer::createUpdateBlock2(Value *VAddr, Value *val, Value *Addr, Instruction *I, BasicBlock *OldB, BasicBlock *ContB, Function *F) {
   if (BranchInst *BI = dyn_cast<BranchInst>(I)) {
     if (std::find(AllBranchList.begin(), AllBranchList.end(), I) != AllBranchList.end()) {
@@ -2510,7 +2532,7 @@ void FPSanitizer::createUpdateBlock2(Value *VAddr, Value *val, Value *Addr, Inst
 
   BasicBlock *NewBB = BasicBlock::Create(M->getContext(), "u_cmp", F);
 
-  //remove old branch instruction and update with new branch instruction
+  //remove old branch instruction and update with new branch instruction to u_cmp block
   Instruction *BrInst = OldB->getTerminator();
   BrInst->eraseFromParent();
 
@@ -2519,42 +2541,85 @@ void FPSanitizer::createUpdateBlock2(Value *VAddr, Value *val, Value *Addr, Inst
   IRBuilder<> IRBE(NewBB);
 
   BasicBlock *UpdateB = BasicBlock::Create(M->getContext(), "update", F);
-
+  BasicBlock *UpdateB2 = BasicBlock::Create(M->getContext(), "update", F);
+  BasicBlock *UpdateBCmp = BasicBlock::Create(M->getContext(), "updatecmp", F);
+  BasicBlock *UpdateNew = BasicBlock::Create(M->getContext(), "updatenew", F);
+  BasicBlock *UpdateNew2 = BasicBlock::Create(M->getContext(), "updatenew", F);
   Value *SLiceF = SliceFlagMap.at(F);
 
-//  FuncInit = M->getOrInsertFunction("fpsanx_print_slice_flag", VoidTy, SLiceF->getType());
-//  IRBE.CreateCall(FuncInit, {SLiceF});
   Value* Cond = IRBE.CreateICmp(ICmpInst::ICMP_EQ, SLiceF, ConstantInt::get(Int8Ty, 1));
-  BranchInst *BInst = BranchInst::Create(/*ifTrue*/UpdateB, /*ifFalse*/ContB, Cond, NewBB);
+  BranchInst *BInst = BranchInst::Create(/*ifTrue*/UpdateBCmp, /*ifFalse*/ContB, Cond, NewBB);
   AllBranchList.push_back(dyn_cast<Instruction>(BInst));
-#if 1
   IRBuilder<> IRB(UpdateB);
 
   //store addr
+  Value *NewAddr = IRB.CreateLoad(PtrDoubleTy, CurIndex, "my_load_idx");
   Value *Counter = IRB.CreateLoad(IRB.getInt64Ty(), QIdx, "my_load_idx");
-  Value *GEP = IRB.CreateGEP(Type::getDoubleTy(M->getContext()), Addr, Counter, "my_gep_buf");
+  Value *GEP = IRB.CreateGEP(Type::getDoubleTy(M->getContext()), NewAddr, Counter, "my_gep_buf");
   Value *ValStore = IRB.CreateStore(VAddr, GEP, "my_store_buf");
   if(DEBUG_P){
-    FuncInit = M->getOrInsertFunction("fpsanx_push_print", VoidTy, VAddr->getType(), Counter->getType());
-    IRB.CreateCall(FuncInit, {VAddr, Counter});
-  }
-  Counter = IRB.CreateAdd(Counter, ConstantInt::get(Int64Ty, 1), "my_incr_idx");
-  //store val
-  GEP = IRB.CreateGEP(Type::getDoubleTy(M->getContext()), Addr, Counter, "my_gep_buf");
-  ValStore = IRB.CreateStore(val, GEP, "my_store_buf");
-  if(DEBUG_P){
-    FuncInit = M->getOrInsertFunction("fpsanx_push_print", VoidTy, val->getType(), Counter->getType());
-    IRB.CreateCall(FuncInit, {val, Counter});
+    FuncInit = M->getOrInsertFunction("fpsanx_push_print", VoidTy, VAddr->getType(), Counter->getType(), PtrDoubleTy);
+    IRB.CreateCall(FuncInit, {VAddr, Counter, GEP});
   }
   Counter = IRB.CreateAdd(Counter, ConstantInt::get(Int64Ty, 1), "my_incr_idx");
   IRB.CreateStore(Counter, QIdx, "my_store_idx");
-  BranchInst *BI = BranchInst::Create(ContB, UpdateB);
+
+  BasicBlock *UpdateBCmp2 = BasicBlock::Create(M->getContext(), "updatecmp", F);
+
+  BranchInst *BI = BranchInst::Create(UpdateBCmp2, UpdateB);
   AllBranchList.push_back(dyn_cast<Instruction>(BI));
-#endif
+
+  IRBuilder<> IRBC(UpdateBCmp);
+  Value *CounterN = IRBC.CreateLoad(IRB.getInt64Ty(), QIdx, "my_load_idx");
+  Value* CCond = IRBC.CreateICmp(ICmpInst::ICMP_ULT, CounterN, ConstantInt::get(Int64Ty, ClBufSize));
+  BranchInst *BInst1 = BranchInst::Create(/*ifTrue*/UpdateB, /*ifFalse*/UpdateNew, CCond, UpdateBCmp);
+  AllBranchList.push_back(dyn_cast<Instruction>(BInst1));
+
+  IRBuilder<> IRBCC(UpdateNew);
+  Instruction *StoreIns = IRBCC.CreateStore(ConstantInt::get(Int64Ty, 0), QIdx, "my_store_idx");
+
+  FuncInit = M->getOrInsertFunction("fpsanx_slice_end_interim", PtrDoubleTy);
+  Value *BufAddr = IRBCC.CreateCall(FuncInit, {});
+  IRBCC.CreateStore(BufAddr, CurIndex, "my_store_idx");
+  NewBufAddrMap.insert(std::pair<Function *, Value *>(F, BufAddr));
+
+  BranchInst *BInst2 = BranchInst::Create(UpdateB, UpdateNew);
+  AllBranchList.push_back(dyn_cast<Instruction>(BInst2));
+  
+  IRBuilder<> IRBCC2(UpdateNew2);
+  StoreIns = IRBCC2.CreateStore(ConstantInt::get(Int64Ty, 0), QIdx, "my_store_idx");
+
+  FuncInit = M->getOrInsertFunction("fpsanx_slice_end_interim", PtrDoubleTy);
+  BufAddr = IRBCC2.CreateCall(FuncInit, {});
+  IRBCC2.CreateStore(BufAddr, CurIndex, "my_store_idx");
+  NewBufAddrMap.insert(std::pair<Function *, Value *>(F, BufAddr));
+
+  BInst2 = BranchInst::Create(UpdateB2, UpdateNew2);
+  AllBranchList.push_back(dyn_cast<Instruction>(BInst2));
+
+  IRBuilder<> IRBC2(UpdateBCmp2);
+  Value *CounterN2 = IRBC2.CreateLoad(IRB.getInt64Ty(), QIdx, "my_load_idx");
+  Value* CCond2 = IRBC2.CreateICmp(ICmpInst::ICMP_ULT, CounterN2, ConstantInt::get(Int64Ty, ClBufSize));
+  BranchInst *BInst3 = BranchInst::Create(/*ifTrue*/UpdateB2, /*ifFalse*/UpdateNew2, CCond2, UpdateBCmp2);
+  AllBranchList.push_back(dyn_cast<Instruction>(BInst3));
+
+  IRBuilder<> IRB2(UpdateB2);
+  NewAddr = IRB2.CreateLoad(PtrDoubleTy, CurIndex, "my_load_idx");
+  Counter = IRB2.CreateLoad(IRB.getInt64Ty(), QIdx, "my_load_idx");
+  GEP = IRB2.CreateGEP(Type::getDoubleTy(M->getContext()), NewAddr, Counter, "my_gep_buf");
+  ValStore = IRB2.CreateStore(val, GEP, "my_store_buf");
+  if(DEBUG_P){
+    FuncInit = M->getOrInsertFunction("fpsanx_push_print", VoidTy, val->getType(), Counter->getType(), PtrDoubleTy);
+    IRB2.CreateCall(FuncInit, {val, Counter, GEP});
+  }
+  Counter = IRB2.CreateAdd(Counter, ConstantInt::get(Int64Ty, 1), "my_incr_idx");
+  IRB2.CreateStore(Counter, QIdx, "my_store_idx");
+  BranchInst *BI3 = BranchInst::Create(ContB, UpdateB2);
+  AllBranchList.push_back(dyn_cast<Instruction>(BI3));
 }
 
-void FPSanitizer::createUpdateBlock3(Value *VAddr1, Value *VAddr2, Value *Val, 
-                                     Value *Addr, Instruction *I, BasicBlock *OldB, 
+void FPSanitizer::createUpdateBlock3(Value *VAddr1, Value *VAddr2, Value *Val,
+                                     Value *Addr, Instruction *I, BasicBlock *OldB,
                                      BasicBlock *ContB, Function *F) {
   if (BranchInst *BI = dyn_cast<BranchInst>(I)) {
     if (std::find(AllBranchList.begin(), AllBranchList.end(), I) != AllBranchList.end()) {
@@ -2585,48 +2650,116 @@ void FPSanitizer::createUpdateBlock3(Value *VAddr1, Value *VAddr2, Value *Val,
   IRBuilder<> IRBE(NewBB);
 
   BasicBlock *UpdateB = BasicBlock::Create(M->getContext(), "update", F);
+  BasicBlock *UpdateB2 = BasicBlock::Create(M->getContext(), "update", F);
+  BasicBlock *UpdateB3 = BasicBlock::Create(M->getContext(), "update", F);
+  BasicBlock *UpdateBCmp = BasicBlock::Create(M->getContext(), "updatecmp", F);
+  BasicBlock *UpdateBCmp2 = BasicBlock::Create(M->getContext(), "updatecmp", F);
+  BasicBlock *UpdateBCmp3 = BasicBlock::Create(M->getContext(), "updatecmp", F);
+  BasicBlock *UpdateNew = BasicBlock::Create(M->getContext(), "updatenew", F);
+  BasicBlock *UpdateNew2 = BasicBlock::Create(M->getContext(), "updatenew", F);
+  BasicBlock *UpdateNew3 = BasicBlock::Create(M->getContext(), "updatenew", F);
 
   Value *SLiceF = SliceFlagMap.at(F);
 
-//  FuncInit = M->getOrInsertFunction("fpsanx_print_slice_flag", VoidTy, SLiceF->getType());
-//  IRBE.CreateCall(FuncInit, {SLiceF});
   Value* Cond = IRBE.CreateICmp(ICmpInst::ICMP_EQ, SLiceF, ConstantInt::get(Int8Ty, 1));
-  BranchInst *BInst = BranchInst::Create(/*ifTrue*/UpdateB, /*ifFalse*/ContB, Cond, NewBB);
+  BranchInst *BInst = BranchInst::Create(/*ifTrue*/UpdateBCmp, /*ifFalse*/ContB, Cond, NewBB);
   AllBranchList.push_back(dyn_cast<Instruction>(BInst));
-#if 1
+
+  IRBuilder<> IRBC(UpdateBCmp);
+  Value *CounterN1 = IRBC.CreateLoad(IRBC.getInt64Ty(), QIdx, "my_load_idx");
+  Value* CCond1 = IRBC.CreateICmp(ICmpInst::ICMP_ULT, CounterN1, ConstantInt::get(Int64Ty, ClBufSize));
+  BranchInst *BInst2 = BranchInst::Create(/*ifTrue*/UpdateB, /*ifFalse*/UpdateNew, CCond1, UpdateBCmp);
+  AllBranchList.push_back(dyn_cast<Instruction>(BInst2));
+
+  IRBuilder<> IRBCC(UpdateNew);
+  Instruction *StoreIns = IRBCC.CreateStore(ConstantInt::get(Int64Ty, 0), QIdx, "my_store_idx");
+
+  FuncInit = M->getOrInsertFunction("fpsanx_slice_end_interim", PtrDoubleTy);
+  Value *BufAddr = IRBCC.CreateCall(FuncInit, {});
+  IRBCC.CreateStore(BufAddr, CurIndex, "my_store_idx");
+  NewBufAddrMap.insert(std::pair<Function *, Value *>(F, BufAddr));
+
+  BranchInst *BInst3 = BranchInst::Create(UpdateB, UpdateNew);
+  AllBranchList.push_back(dyn_cast<Instruction>(BInst3));
+
+  IRBuilder<> IRBCC2(UpdateNew2);
+  StoreIns = IRBCC2.CreateStore(ConstantInt::get(Int64Ty, 0), QIdx, "my_store_idx");
+
+  FuncInit = M->getOrInsertFunction("fpsanx_slice_end_interim", PtrDoubleTy);
+  BufAddr = IRBCC2.CreateCall(FuncInit, {});
+  IRBCC2.CreateStore(BufAddr, CurIndex, "my_store_idx");
+  NewBufAddrMap.insert(std::pair<Function *, Value *>(F, BufAddr));
+
+  BInst3 = BranchInst::Create(UpdateB2, UpdateNew2);
+  AllBranchList.push_back(dyn_cast<Instruction>(BInst3));
+
+  IRBuilder<> IRBCC3(UpdateNew3);
+  StoreIns = IRBCC3.CreateStore(ConstantInt::get(Int64Ty, 0), QIdx, "my_store_idx");
+
+  FuncInit = M->getOrInsertFunction("fpsanx_slice_end_interim", PtrDoubleTy);
+  BufAddr = IRBCC3.CreateCall(FuncInit, {});
+  IRBCC3.CreateStore(BufAddr, CurIndex, "my_store_idx");
+  NewBufAddrMap.insert(std::pair<Function *, Value *>(F, BufAddr));
+
+  BInst3 = BranchInst::Create(UpdateB3, UpdateNew3);
+  AllBranchList.push_back(dyn_cast<Instruction>(BInst3));
   IRBuilder<> IRB(UpdateB);
 
   //store addr1
+  Value *NewAddr = IRB.CreateLoad(PtrDoubleTy, CurIndex, "my_load_idx");
   Value *Counter = IRB.CreateLoad(IRB.getInt64Ty(), QIdx, "my_load_idx");
-  Value *GEP = IRB.CreateGEP(Type::getDoubleTy(M->getContext()), Addr, Counter, "my_gep_buf");
+  Value *GEP = IRB.CreateGEP(Type::getDoubleTy(M->getContext()), NewAddr, Counter, "my_gep_buf");
   Value *ValStore = IRB.CreateStore(VAddr1, GEP, "my_store_buf");
   if(DEBUG_P){
-    FuncInit = M->getOrInsertFunction("fpsanx_push_print", VoidTy, VAddr1->getType(), Counter->getType());
-    IRB.CreateCall(FuncInit, {VAddr1, Counter});
-  }
-  Counter = IRB.CreateAdd(Counter, ConstantInt::get(Int64Ty, 1), "my_incr_idx");
-
-  //store addr2
-  GEP = IRB.CreateGEP(Type::getDoubleTy(M->getContext()), Addr, Counter, "my_gep_buf");
-  ValStore = IRB.CreateStore(VAddr2, GEP, "my_store_buf");
-  if(DEBUG_P){
-    FuncInit = M->getOrInsertFunction("fpsanx_push_print", VoidTy, VAddr2->getType(), Counter->getType());
-    IRB.CreateCall(FuncInit, {VAddr2, Counter});
-  }
-  Counter = IRB.CreateAdd(Counter, ConstantInt::get(Int64Ty, 1), "my_incr_idx");
-
-  //store val
-  GEP = IRB.CreateGEP(Type::getDoubleTy(M->getContext()), Addr, Counter, "my_gep_buf");
-  ValStore = IRB.CreateStore(Val, GEP, "my_store_buf");
-  if(DEBUG_P){
-    FuncInit = M->getOrInsertFunction("fpsanx_push_print", VoidTy, Val->getType(), Counter->getType());
-    IRB.CreateCall(FuncInit, {Val, Counter});
+    FuncInit = M->getOrInsertFunction("fpsanx_push_print", VoidTy, VAddr1->getType(), Counter->getType(), PtrDoubleTy);
+    IRB.CreateCall(FuncInit, {VAddr1, Counter, GEP});
   }
   Counter = IRB.CreateAdd(Counter, ConstantInt::get(Int64Ty, 1), "my_incr_idx");
   IRB.CreateStore(Counter, QIdx, "my_store_idx");
-  BranchInst *BI = BranchInst::Create(ContB, UpdateB);
+  BranchInst *BI = BranchInst::Create(UpdateBCmp2, UpdateB);
   AllBranchList.push_back(dyn_cast<Instruction>(BI));
-#endif
+
+  IRBuilder<> IRBC2(UpdateBCmp2);
+  Value *CounterN = IRBC2.CreateLoad(IRB.getInt64Ty(), QIdx, "my_load_idx");
+  Value* CCond = IRBC2.CreateICmp(ICmpInst::ICMP_ULT, CounterN, ConstantInt::get(Int64Ty, ClBufSize));
+  BranchInst *BInst1 = BranchInst::Create(/*ifTrue*/UpdateB2, /*ifFalse*/UpdateNew2, CCond, UpdateBCmp2);
+  AllBranchList.push_back(dyn_cast<Instruction>(BInst1));
+
+  //store addr2
+  IRBuilder<> IRB2(UpdateB2);
+  NewAddr = IRB2.CreateLoad(PtrDoubleTy, CurIndex, "my_load_idx");
+  Counter = IRB2.CreateLoad(IRB.getInt64Ty(), QIdx, "my_load_idx");
+  GEP = IRB2.CreateGEP(Type::getDoubleTy(M->getContext()), NewAddr, Counter, "my_gep_buf");
+  ValStore = IRB2.CreateStore(VAddr2, GEP, "my_store_buf");
+  if(DEBUG_P){
+    FuncInit = M->getOrInsertFunction("fpsanx_push_print", VoidTy, VAddr2->getType(), Counter->getType(), PtrDoubleTy);
+    IRB2.CreateCall(FuncInit, {VAddr2, Counter, GEP});
+  }
+  Counter = IRB2.CreateAdd(Counter, ConstantInt::get(Int64Ty, 1), "my_incr_idx");
+  IRB2.CreateStore(Counter, QIdx, "my_store_idx");
+  BranchInst *BI1 = BranchInst::Create(UpdateBCmp3, UpdateB2);
+  AllBranchList.push_back(dyn_cast<Instruction>(BI1));
+
+  IRBuilder<> IRBC3(UpdateBCmp3);
+  Value *CounterN3 = IRBC3.CreateLoad(IRB.getInt64Ty(), QIdx, "my_load_idx");
+  Value* CCond3 = IRBC3.CreateICmp(ICmpInst::ICMP_ULT, CounterN3, ConstantInt::get(Int64Ty, ClBufSize));
+  BranchInst *BInst4 = BranchInst::Create(/*ifTrue*/UpdateB3, /*ifFalse*/UpdateNew3, CCond3, UpdateBCmp3);
+  AllBranchList.push_back(dyn_cast<Instruction>(BInst4));
+
+  //store val
+  IRBuilder<> IRB3(UpdateB3);
+  NewAddr = IRB3.CreateLoad(PtrDoubleTy, CurIndex, "my_load_idx");
+  Counter = IRB3.CreateLoad(IRB.getInt64Ty(), QIdx, "my_load_idx");
+  GEP = IRB3.CreateGEP(Type::getDoubleTy(M->getContext()), NewAddr, Counter, "my_gep_buf");
+  ValStore = IRB3.CreateStore(Val, GEP, "my_store_buf");
+  if(DEBUG_P){
+    FuncInit = M->getOrInsertFunction("fpsanx_push_print", VoidTy, Val->getType(), Counter->getType(), PtrDoubleTy);
+    IRB3.CreateCall(FuncInit, {Val, Counter, GEP});
+  }
+  Counter = IRB3.CreateAdd(Counter, ConstantInt::get(Int64Ty, 1), "my_incr_idx");
+  IRB3.CreateStore(Counter, QIdx, "my_store_idx");
+  BranchInst *BI4 = BranchInst::Create(ContB, UpdateB3);
+  AllBranchList.push_back(dyn_cast<Instruction>(BI4));
 }
 
 void FPSanitizer::addIncomingPhi(BasicBlock *BB){
@@ -2660,6 +2793,276 @@ void FPSanitizer::addIncomingPhi(BasicBlock *BB){
       }
     }
   }
+}
+
+void FPSanitizer::addIncomingPhiC(BasicBlock *BB){
+  Module *M = BB->getParent()->getParent();
+  IntegerType *Int64Ty = Type::getInt64Ty(M->getContext());
+  SmallVector<BasicBlock *, 8> PredList;
+  for (auto &I : *BB){
+    if (PHINode *PN = dyn_cast<PHINode>(&I)) {
+      Value *V = dyn_cast<Value>(&I);
+      if(V->getName().startswith("my_phi_c")){
+        if(PN->getNumIncomingValues() == 0){
+          for (pred_iterator PI = pred_begin(BB), E = pred_end(BB); PI != E; ++PI){
+            BasicBlock *Pred = *PI;
+            if(CQIdxMap.count(Pred) != 0){
+              Value *Counter = CQIdxMap.at(Pred);
+              PN->addIncoming(Counter, Pred);
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+void FPSanitizer::propagatePhiCounterConsumer1(BasicBlock *BB, Function *F){
+  Instruction *CurIncr;
+  SmallVector<Instruction *, 8> LoadList;
+  if(CQIdxMap.count(BB) == 0){
+    for (pred_iterator PI = pred_begin(BB), E = pred_end(BB); PI != E; ++PI){
+      BasicBlock *Pred = *PI;
+      if(CQIdxMap.count(Pred) == 0){
+        propagatePhiCounterConsumer1(Pred, F);
+      }
+      else{
+        CurIncr = CQIdxMap.at(Pred);
+        for (auto &I : *BB) {
+          if(LoadInst *LI = dyn_cast<LoadInst>(&I)){
+            Value *V = dyn_cast<Value>(&I);
+            if(V->getName().startswith("my_load_idx_c")){
+              LI->replaceAllUsesWith(CurIncr);
+              LoadList.push_back(LI);
+            }
+          } 
+          else if(StoreInst *SI = dyn_cast<StoreInst>(&I)){
+            Value *V = dyn_cast<Value>(SI->getOperand(0));
+            if(V->getName().startswith("my_incr_idx_c")){
+              Value *CurIncrVal = SI->getOperand(0);
+              CurIncr = dyn_cast<Instruction>(CurIncrVal);
+              LoadList.push_back(SI);
+            }
+          }
+          else if(CallInst *CI = dyn_cast<CallInst>(&I)){
+            IRBuilder<> IRB(CI);
+            IRBuilder<> IRBB(CI->getNextNode());
+            Function *Callee = CI->getCalledFunction();
+            CallSite CS(&I);
+            if(Callee && Callee->getName().startswith("fpsan_func_exit")){
+              IRB.CreateStore(CurIncr, CQIdx, "my_store_af");
+            }
+            if(CS.isIndirectCall()){
+              IRB.CreateStore(CurIncr, CQIdx, "my_store_idx");
+              CurIncr = IRBB.CreateLoad(IRB.getInt64Ty(), CQIdx, "my_load_idx_af");
+            }
+            if(Callee && !CS.isIndirectCall()){
+              if (Callee->isDeclaration())
+                continue;
+              if (!(Callee->getName().startswith("fpsan") || 
+                    Callee->getName().startswith("start_slice") ||
+                    Callee->getName().startswith("end_slice"))){
+                  IRB.CreateStore(CurIncr, CQIdx, "my_store_idx");
+                  CurIncr = IRBB.CreateLoad(IRB.getInt64Ty(), CQIdx, "my_load_idx_af");
+              }
+            }
+          }
+        }
+        CQIdxMap.insert(std::pair<BasicBlock *, Instruction *>(BB, CurIncr));
+        for (Instruction *Inst : LoadList) {
+          Inst->eraseFromParent();
+        }
+        LoadList.clear();
+      }
+    }
+  }
+}
+
+void FPSanitizer::propagatePhiCounterConsumer(BasicBlock *BB, Function *F){
+  SmallVector<BasicBlock *, 8> PredList;
+  SmallVector<Instruction *, 8> LoadList;
+  Instruction *CurIncr;
+  for (pred_iterator PI = pred_begin(BB), E = pred_end(BB); PI != E; ++PI){
+    BasicBlock *Pred = *PI;
+    PredList.push_back(Pred);
+  }
+  if(PredList.size() == 1 && CQIdxMap.count(BB) == 0){
+    CurIncr = CQIdxMap.at(PredList[0]);
+    for (auto &I : *BB) {
+      if(LoadInst *LI = dyn_cast<LoadInst>(&I)){
+        Value *V = dyn_cast<Value>(&I);
+        if(V->getName().startswith("my_load_idx_c")){
+          LI->replaceAllUsesWith(CurIncr);
+          LoadList.push_back(LI);
+        }
+      } 
+      else if(StoreInst *SI = dyn_cast<StoreInst>(&I)){
+        Value *V = dyn_cast<Value>(SI->getOperand(0));
+        if(V->getName().startswith("my_incr_idx_c")){
+          Value *CurIncrVal = SI->getOperand(0);
+          CurIncr = dyn_cast<Instruction>(CurIncrVal);
+          LoadList.push_back(SI);
+        }
+      }
+      else if(CallInst *CI = dyn_cast<CallInst>(&I)){
+        IRBuilder<> IRB(CI);
+        IRBuilder<> IRBB(CI->getNextNode());
+        Function *Callee = CI->getCalledFunction();
+        CallSite CS(&I);
+        if(Callee && Callee->getName().startswith("fpsan_func_exit")){
+          IRB.CreateStore(CurIncr, CQIdx, "my_store_af");
+        }
+        if(CS.isIndirectCall()){
+          IRB.CreateStore(CurIncr, CQIdx, "my_store_idx");
+          CurIncr = IRBB.CreateLoad(IRB.getInt64Ty(), CQIdx, "my_load_idx_af");
+        }
+        if(Callee && !CS.isIndirectCall()){
+          if (Callee->isDeclaration())
+            continue;
+          if (!(Callee->getName().startswith("fpsan") || 
+                Callee->getName().startswith("start_slice") ||
+                Callee->getName().startswith("end_slice"))){
+            IRB.CreateStore(CurIncr, CQIdx, "my_store_idx");
+            CurIncr = IRBB.CreateLoad(IRB.getInt64Ty(), CQIdx, "my_load_idx_af");
+          }
+        }
+      }
+    }
+    CQIdxMap.insert(std::pair<BasicBlock *, Instruction *>(BB, CurIncr));
+  }
+  for (Instruction *Inst : LoadList) {
+    Inst->eraseFromParent();
+  }
+  LoadList.clear();
+}
+
+void FPSanitizer::createPhiCounterConsumer(BasicBlock *BB, Function *F){
+  Module *M = BB->getParent()->getParent();
+  IntegerType *Int64Ty = Type::getInt64Ty(M->getContext());
+  SmallVector<BasicBlock *, 8> PredList;
+  SmallVector<Instruction *, 8> LoadList;
+  Instruction *CurIncr;
+  bool flagFirst = false;
+  bool checkFlag = false;
+  if(BB == &F->getEntryBlock()){
+    for (auto &I : *BB) {
+      if(LoadInst *LI = dyn_cast<LoadInst>(&I)){
+        Value *V = dyn_cast<Value>(&I);
+        if(V->getName().startswith("my_load_idx_c")){
+          if(!flagFirst){ // this is the first load in entry block
+            CurIncr = LI;
+            flagFirst = true;
+          }
+          else{ // this is not the first load
+            LI->replaceAllUsesWith(CurIncr);
+            LoadList.push_back(LI);
+          }
+        }
+      }
+      else if(StoreInst *SI = dyn_cast<StoreInst>(&I)){
+        Value *V = dyn_cast<Value>(SI->getOperand(0));
+        if(V->getName().startswith("my_incr_idx_c")){
+          Value *CurIncrVal = SI->getOperand(0);
+          CurIncr = dyn_cast<Instruction>(CurIncrVal);
+          LoadList.push_back(SI);
+        }
+      }
+      else if(CallInst *CI = dyn_cast<CallInst>(&I)){
+        IRBuilder<> IRB(CI);
+        IRBuilder<> IRBB(CI->getNextNode());
+        Function *Callee = CI->getCalledFunction();
+        CallSite CS(&I);
+
+        if(Callee && Callee->getName().startswith("fpsan_func_exit")){
+          IRB.CreateStore(CurIncr, CQIdx, "my_store_af");
+        }
+        if(CS.isIndirectCall()){
+          IRB.CreateStore(CurIncr, CQIdx, "my_store_idx");
+          CurIncr = IRBB.CreateLoad(IRB.getInt64Ty(), CQIdx, "my_load_idx_af");
+        }
+        if(Callee && !CS.isIndirectCall()){
+          if (Callee->isDeclaration())
+            continue;
+          if (!(Callee->getName().startswith("fpsan") || 
+                Callee->getName().startswith("start_slice") ||
+                Callee->getName().startswith("end_slice"))){
+            IRB.CreateStore(CurIncr, CQIdx, "my_store_idx");
+            CurIncr = IRBB.CreateLoad(IRB.getInt64Ty(), CQIdx, "my_load_idx_af");
+          }
+        }
+      }
+    }
+    CQIdxMap.insert(std::pair<BasicBlock *, Instruction *>(BB, CurIncr));
+  }
+  else{
+    for (pred_iterator PI = pred_begin(BB), E = pred_end(BB); PI != E; ++PI){
+      BasicBlock *Pred = *PI;
+      PredList.push_back(Pred);
+    }
+    if(PredList.size() > 1){
+
+      if(CQIdxMap.count(BB) == 0){
+        BasicBlock::iterator BBit = BB->begin();
+        Instruction *First = &*BBit;
+        IRBuilder<> IRBO(First);
+        PHINode *iPHI = IRBO.CreatePHI(Int64Ty, PredList.size(), "my_phi_c");
+        CurIncr = iPHI;
+        checkFlag = true;
+      }
+      for (auto &I : *BB) {
+        if(LoadInst *LI = dyn_cast<LoadInst>(&I)){
+          Value *V = dyn_cast<Value>(&I);
+          if(V->getName().startswith("my_load_idx_c")){
+            LI->replaceAllUsesWith(CurIncr);
+            LoadList.push_back(LI);
+          }
+        }
+        else if(StoreInst *SI = dyn_cast<StoreInst>(&I)){
+          Value *V = dyn_cast<Value>(SI->getOperand(0));
+          if(V->getName().startswith("my_incr_idx_c")){
+            Value *CurIncrVal = SI->getOperand(0);
+            CurIncr = dyn_cast<Instruction>(CurIncrVal);
+            LoadList.push_back(SI);
+            checkFlag = true;
+          }
+        }
+        else if(CallInst *CI = dyn_cast<CallInst>(&I)){
+          IRBuilder<> IRB(CI);
+          IRBuilder<> IRBB(CI->getNextNode());
+          Function *Callee = CI->getCalledFunction();
+          CallSite CS(&I);
+          if(Callee && Callee->getName().startswith("fpsan_func_exit")){
+            IRB.CreateStore(CurIncr, CQIdx, "my_store_af");
+          }
+          if(CS.isIndirectCall()){
+            if(checkFlag){
+              IRB.CreateStore(CurIncr, CQIdx, "my_store_idx");
+              CurIncr = IRBB.CreateLoad(IRB.getInt64Ty(), CQIdx, "my_load_idx_af");
+            }
+          }
+          if(Callee && !CS.isIndirectCall()){
+            if (Callee->isDeclaration())
+              continue;
+            if (!(Callee->getName().startswith("fpsan") || 
+                  Callee->getName().startswith("start_slice") ||
+                  Callee->getName().startswith("end_slice"))){
+              if(checkFlag){
+                IRB.CreateStore(CurIncr, CQIdx, "my_store_idx");
+                CurIncr = IRBB.CreateLoad(IRB.getInt64Ty(), CQIdx, "my_load_idx_af");
+              }
+            }
+          }
+        }
+      }
+      if(checkFlag){
+        CQIdxMap.insert(std::pair<BasicBlock *, Instruction *>(BB, CurIncr));
+      }
+    }
+  }
+  for (Instruction *Inst : LoadList) {
+    Inst->eraseFromParent();
+  }
+  LoadList.clear();
 }
 
 void FPSanitizer::createPhiCounter(BasicBlock *BB){
@@ -2748,6 +3151,58 @@ void FPSanitizer::propagatePhiCounter(BasicBlock *BB){
   }
 }
 
+void FPSanitizer::createUpdateBlockArg1(Function *F) {
+  Module *M = F->getParent();
+  Type *VoidTy = Type::getVoidTy(M->getContext());
+  IntegerType *Int8Ty = Type::getInt8Ty(M->getContext());
+  IntegerType *Int32Ty = Type::getInt32Ty(M->getContext());
+  IntegerType *Int64Ty = Type::getInt64Ty(M->getContext());
+  IntegerType *Int1Ty = Type::getInt1Ty(M->getContext());
+  Type *PtrDoubleTy = PointerType::getUnqual(Type::getDoubleTy(M->getContext()));
+
+  Value *BufAddr = BufAddrMap.at(F);
+
+  Function::iterator Fit = F->begin();
+  BasicBlock &BB = *Fit;
+  BasicBlock::iterator BBit = BB.begin();
+  Instruction *First = &*BBit;
+  for (auto &I : BB) {
+    if (CallInst *CI = dyn_cast<CallInst>(&I)) {
+      Function *Callee = CI->getCalledFunction();
+      if (Callee) {
+        if (Callee->getName().startswith("fpsanx_get") ||
+            Callee->getName().startswith("start_slice")) {
+          First = &I;
+        }
+      }
+    }
+  }
+  IRBuilder<> IRB(First);
+
+  Value *Counter;
+  if(QIdxMap.count(&BB) != 0){
+    Counter = QIdxMap.at(&BB);
+  }
+  for (Function::arg_iterator I = F->arg_begin(), E = F->arg_end();
+       I != E; ++I) {
+    Argument *Arg = &*I;
+    Value *Op = dyn_cast<Value>(Arg);
+    if(isFloat(Op->getType())){
+      Op = IRB.CreateFPExt(Op, Type::getDoubleTy(M->getContext()));
+    }
+    if(isFloatType(Op->getType())){ 
+      Value *GEP = IRB.CreateGEP(Type::getDoubleTy(M->getContext()), BufAddr, Counter, "my_gep_buf");
+      Value *ValStore = IRB.CreateStore(Op, GEP, "my_store_buf");
+      if(DEBUG_P){
+        FuncInit = M->getOrInsertFunction("fpsanx_push_print", VoidTy, Op->getType(), Counter->getType(), PtrDoubleTy);
+        IRB.CreateCall(FuncInit, {Op, Counter, GEP});
+      }
+      Counter = IRB.CreateAdd(Counter, ConstantInt::get(Int64Ty, 1), "my_incr_idx");
+    }
+  }
+  IRB.CreateStore(Counter, QIdx, "my_store_idx");
+}
+
 Value* FPSanitizer::createUpdateBlockArg(Value *Addr, Instruction *I, 
                           Function *F, Value *Counter) {
   if (std::find(AllBranchList.begin(), AllBranchList.end(), I) != AllBranchList.end()) {
@@ -2766,8 +3221,6 @@ Value* FPSanitizer::createUpdateBlockArg(Value *Addr, Instruction *I,
   size_t NumOperands = CI->getNumArgOperands();
   Value *BufAddr = BufAddrMap.at(F);
 
-  //Remove old branch instruction and update with new branch instruction
-
 #if 1
   IRBuilder<> IRB(I);
 
@@ -2780,14 +3233,78 @@ Value* FPSanitizer::createUpdateBlockArg(Value *Addr, Instruction *I,
       Value *GEP = IRB.CreateGEP(Type::getDoubleTy(M->getContext()), Addr, Counter, "my_gep_buf");
       Value *ValStore = IRB.CreateStore(Op, GEP, "my_store_buf");
       if(DEBUG_P){
-        FuncInit = M->getOrInsertFunction("fpsanx_push_print", VoidTy, Op->getType(), Counter->getType());
-        IRB.CreateCall(FuncInit, {Op, Counter});
+        FuncInit = M->getOrInsertFunction("fpsanx_push_print", VoidTy, Op->getType(), Counter->getType(), PtrDoubleTy);
+        IRB.CreateCall(FuncInit, {Op, Counter, GEP});
       }
       Counter = IRB.CreateAdd(Counter, ConstantInt::get(Int64Ty, 1), "my_incr_idx");
     }
   }
   return Counter;
 #endif
+}
+
+void FPSanitizer::loadIdx(Instruction *First, BasicBlock *BB, Function *F) {
+  Module *M = F->getParent();
+  IntegerType *Int64Ty = Type::getInt64Ty(M->getContext());
+  Type *PtrDoubleTy = PointerType::getUnqual(Type::getDoubleTy(M->getContext()));
+  Type *VoidTy = Type::getVoidTy(M->getContext());
+  BasicBlock::iterator BBit = BB->begin();
+  Instruction *FIns = &*BBit;
+  IRBuilder<> IRB(FIns);
+  GetElementPtrInst *OldGEP = dyn_cast<GetElementPtrInst>(First);
+
+  Value *Idx = OldGEP->getOperand(1);
+  Instruction *IdxIns = dyn_cast<Instruction>(Idx);
+  Value *NewAddr = IRB.CreateLoad(PtrDoubleTy, CCurIndex, "my_load_idx");
+  Value *Counter = IRB.CreateLoad(IRB.getInt64Ty(), CQIdx, "my_new_load_idx_c");
+  Value *GEP = IRB.CreateGEP(Type::getDoubleTy(M->getContext()), NewAddr, Counter, "my_gep_buf_c");
+  First->replaceAllUsesWith(GEP);
+  if(DEBUG_P){
+    FunctionCallee FuncPrint = M->getOrInsertFunction("pull_print_idx", VoidTy, Counter->getType());
+    IRB.CreateCall(FuncPrint, {Counter});
+  }
+  for (auto &I : *BB) {
+    Value *V = dyn_cast<Value>(&I);
+    if(V->getName().startswith("my_incr_idx_c")){
+      IRBuilder<> IRBB(&I);
+      Value *Add = IRBB.CreateAdd(Counter, ConstantInt::get(Int64Ty, 1), "my_incr_idx_c");
+      I.replaceAllUsesWith(dyn_cast<Instruction>(Add));
+      I.eraseFromParent();
+      break;
+    }
+  }
+}
+
+void FPSanitizer::splitReadFromBuf(Instruction *First, BasicBlock *BB, Function *F) {
+  Module *M = F->getParent();
+  Type *VoidTy = Type::getVoidTy(M->getContext());
+  IntegerType *Int8Ty = Type::getInt8Ty(M->getContext());
+  IntegerType *Int32Ty = Type::getInt32Ty(M->getContext());
+  IntegerType *Int64Ty = Type::getInt64Ty(M->getContext());
+  IntegerType *Int1Ty = Type::getInt1Ty(M->getContext());
+  Type *PtrDoubleTy = PointerType::getUnqual(Type::getDoubleTy(M->getContext()));
+
+  Value *Addr = CBufAddrMap.at(F);
+  BasicBlock *UpdateB = BasicBlock::Create(M->getContext(), "update", F);
+
+  IRBuilder<> IRBB(First->getNextNode());
+  Value* Cond = IRBB.CreateICmp(ICmpInst::ICMP_ULT, First, ConstantInt::get(Int64Ty, ClBufSize));
+  BasicBlock *Cont = BB->splitBasicBlock(dyn_cast<Instruction>(Cond)->getNextNode(), "split");
+
+  BasicBlock::iterator BBit = Cont->begin();
+  Instruction *FIns = &*BBit;
+  IRBuilder<> IRBC(FIns);
+
+  Instruction *BrInst = BB->getTerminator();
+  BrInst->eraseFromParent();
+  BranchInst *BInst = BranchInst::Create(/*ifTrue*/Cont, /*ifFalse*/UpdateB, Cond, BB);
+
+  IRBuilder<> IRBN(UpdateB);
+  IRBN.CreateStore(ConstantInt::get(Int64Ty, 0), CQIdx, "my_store_idx_c");
+  FuncInit = M->getOrInsertFunction("fpsanx_shadow_task_interim", PtrDoubleTy);
+  Value *BufAddr = IRBN.CreateCall(FuncInit, {});
+
+  BranchInst *BInst2 = BranchInst::Create(Cont, UpdateB);
 }
 
 Value* FPSanitizer::readFromBuf(Instruction *I, BasicBlock *BB, Function *F) {
@@ -2811,63 +3328,10 @@ Value* FPSanitizer::readFromBuf(Instruction *I, BasicBlock *BB, Function *F) {
   }
   Value *Add = IRB.CreateAdd(Counter, ConstantInt::get(Int64Ty, 1), "my_incr_idx_c");
   IRB.CreateStore(Add, CQIdx, "my_store_idx_c");
+
   return Val;
 }
 
-void FPSanitizer::createUpdateBlock(Value *val, Value *Addr, Instruction *I, BasicBlock *OldB, BasicBlock *ContB, Function *F) {
-  if (BranchInst *BI = dyn_cast<BranchInst>(I)) {
-    if (std::find(AllBranchList.begin(), AllBranchList.end(), I) != AllBranchList.end()) {
-      return;
-    }
-  }
-  else if (SwitchInst *BI = dyn_cast<SwitchInst>(I)) {
-    if (std::find(AllBranchList.begin(), AllBranchList.end(), I) != AllBranchList.end()) {
-      return;
-    }
-  }
-  Module *M = F->getParent();
-  Type *VoidTy = Type::getVoidTy(M->getContext());
-  IntegerType *Int8Ty = Type::getInt8Ty(M->getContext());
-  IntegerType *Int32Ty = Type::getInt32Ty(M->getContext());
-  IntegerType *Int64Ty = Type::getInt64Ty(M->getContext());
-  IntegerType *Int1Ty = Type::getInt1Ty(M->getContext());
-  Type *PtrDoubleTy = PointerType::getUnqual(Type::getDoubleTy(M->getContext()));
-
-  BasicBlock *NewBB = BasicBlock::Create(M->getContext(), "u_cmp", F);
-
-  //remove old branch instruction and update with new branch instruction
-  Instruction *BrInst = OldB->getTerminator();
-  BrInst->eraseFromParent();
-
-  BranchInst *BJCmp = BranchInst::Create(NewBB, OldB);
-  AllBranchList.push_back(dyn_cast<Instruction>(BJCmp));
-  IRBuilder<> IRBE(NewBB);
-
-  BasicBlock *UpdateB = BasicBlock::Create(M->getContext(), "update", F);
-
-  Value *SLiceF = SliceFlagMap.at(F);
-
-//  FuncInit = M->getOrInsertFunction("fpsanx_print_slice_flag", VoidTy, SLiceF->getType());
-//  IRBE.CreateCall(FuncInit, {SLiceF});
-  Value* Cond = IRBE.CreateICmp(ICmpInst::ICMP_EQ, SLiceF, ConstantInt::get(Int8Ty, 1));
-  BranchInst *BInst = BranchInst::Create(/*ifTrue*/UpdateB, /*ifFalse*/ContB, Cond, NewBB);
-  AllBranchList.push_back(dyn_cast<Instruction>(BInst));
-#if 1
-  IRBuilder<> IRB(UpdateB);
-
-  Value *Counter = IRB.CreateLoad(IRB.getInt64Ty(), QIdx, "my_load_idx");
-  Value *GEP = IRB.CreateGEP(Type::getDoubleTy(M->getContext()), Addr, Counter, "my_gep_buf");
-  Value *ValStore = IRB.CreateStore(val, GEP, "my_store_buf");
-  if(DEBUG_P){
-    FuncInit = M->getOrInsertFunction("fpsanx_push_print", VoidTy, val->getType(), Counter->getType());
-    IRB.CreateCall(FuncInit, {val, Counter});
-  }
-  Value *Add = IRB.CreateAdd(Counter, ConstantInt::get(Int64Ty, 1), "my_incr_idx");
-  IRB.CreateStore(Add, QIdx, "my_store_idx");
-  BranchInst *BI = BranchInst::Create(ContB, UpdateB);
-  AllBranchList.push_back(dyn_cast<Instruction>(BI));
-#endif
-}
 
 void FPSanitizer::handleFNeg(UnaryOperator *UO, BasicBlock *BB, Function *F) {
   Instruction *I = dyn_cast<Instruction>(UO);
@@ -3022,7 +3486,6 @@ void FPSanitizer::handleFcmp(FCmpInst *FCI, BasicBlock *BB, Function *F) {
 
   IRBuilder<> IRBB(Computed->getNextNode());
   Value *InsIndex1, *InsIndex2;
-  // We don't want to instrument fpsanx_pull_value
   if (CallInst *CI = dyn_cast<CallInst>(FCI->getOperand(0))) {
     Function *Callee = CI->getCalledFunction();
     if (Callee && Callee->getName().startswith("fpsanx_pull_value")) {
@@ -3237,12 +3700,6 @@ void FPSanitizer::handleLoadProducer(LoadInst *LI, BasicBlock *BB,
   bool BTFlag = false;
 
   int fType = 0;
-  if (BitCastInst *BI = dyn_cast<BitCastInst>(Addr)) {
-    if(checkIfBitcastFromFP(BI)){
-      errs()<<"Warning!!! Error provenance might get lost, please rewrite code to avoid load\n";
-      errs()<<F->getName()<<":"<<*LI<<"\n";
-    }
-  }
   if (isFloatType(LI->getType()) || BTFlag) {
     long InsIndex;
     if (isFloat(LI->getType()) || fType == 1) {
@@ -3332,7 +3789,6 @@ void FPSanitizer::handleUToFProducer(UIToFPInst *SI, BasicBlock *BB,
         SI->getType());
   }
   Value *BufAddr = BufAddrMap.at(F);
-  //IRB.CreateCall(UpdateBufferFunc, {SI, BufAddr});
   Value *DFPVal;
   if(isDouble(SI->getType())){
     DFPVal = SI;
@@ -3397,7 +3853,8 @@ void FPSanitizer::handleBToF(BitCastInst *SI, BasicBlock *BB, Function *F) {
 
 void FPSanitizer::handleLoad(LoadInst *LI, BasicBlock *BB, Function *F) {
   Value *V = dyn_cast<Value>(LI);
-  if(V->getName().startswith("my_load_val")){
+  if(V->getName().startswith("my_load_val") ||
+      V->getName().startswith("my_load_idx_c")){
     return;
   }
   Instruction *I = dyn_cast<Instruction>(LI);
@@ -3475,6 +3932,8 @@ void FPSanitizer::handleIns(Instruction *I, BasicBlock *BB, Function *F) {
     handleUToF(UI, BB, F);
   } else if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
     handleLoad(LI, BB, F);
+  } else if (FCmpInst *FCI = dyn_cast<FCmpInst>(I)) {
+    //handleFcmp(FCI, BB, F);
   } else if (StoreInst *SI = dyn_cast<StoreInst>(I)) {
     handleStore(SI, BB, F);
   } else if (SelectInst *SI = dyn_cast<SelectInst>(I)) {
@@ -3541,6 +4000,9 @@ void FPSanitizer::handleBranch(Function *F) {
         if (BranchInst *BI = dyn_cast<BranchInst>(&Inst)) {
           if (BI->isConditional()) {
             IRBuilder<> IRB(BI);
+            FuncInit = M->getOrInsertFunction(
+                "fpsanx_pull_cond", Type::getInt1Ty(M->getContext()),
+                Type::getInt32Ty(M->getContext()));
             Value *Cond1 = readFromBuf(BI, &BB, F);
             Value *Cond = IRB.CreateFPToUI(Cond1, Type::getInt1Ty(M->getContext()), "my_trunc");
             FCMPMap.insert(std::pair<Instruction *, Instruction *>(
@@ -3551,8 +4013,11 @@ void FPSanitizer::handleBranch(Function *F) {
         }
         if (SwitchInst *SI = dyn_cast<SwitchInst>(&Inst)) {
           IRBuilder<> IRB(SI);
+          FuncInit = M->getOrInsertFunction("fpsanx_pull_cond_d",
+              Type::getInt32Ty(M->getContext()),
+              Type::getInt32Ty(M->getContext()));
           Value *Cond1 = readFromBuf(SI, &BB, F);
-          Value *Cond = IRB.CreateFPToUI(Cond1, Type::getInt1Ty(M->getContext()), "my_trunc");
+          Value *Cond = IRB.CreateFPToUI(Cond1, SI->getOperand(0)->getType(), "my_trunc");
           FCMPMap.insert(std::pair<Instruction *, Instruction *>(
                 dyn_cast<Instruction>(SI->getOperand(0)),
                 dyn_cast<Instruction>(Cond)));
@@ -3606,6 +4071,8 @@ void FPSanitizer::RemoveEveryThingButFloat(Function *F) {
       else if(V->getName().startswith("arg_alloca")){
       }
       else if(V->getName().startswith("my_phi")){
+      }
+      else if(V->getName().startswith("my_phi_c")){
       }
       else if(V->getName().startswith("my_select")){
       }
@@ -3665,6 +4132,8 @@ void FPSanitizer::RemoveEveryThingButFloat(Function *F) {
           }
           else if(V->getName().startswith("my_phi")){
           }
+          else if(V->getName().startswith("my_phi_c")){
+          }
           else if(V->getName().startswith("my_select")){
           }
           else{
@@ -3685,105 +4154,6 @@ void FPSanitizer::RemoveEveryThingButFloat(Function *F) {
     Inst->eraseFromParent();
   }
 #endif
-}
-
-Function *FPSanitizer::addIndexProducer(Function *F) {
-  ValueToValueMapTy VMap;
-
-  std::vector<Type *> ArgTypes;
-
-  // Create a new function type...
-  Module *M = F->getParent();
-
-  Type *VoidTy = Type::getVoidTy(M->getContext());
-  Type *PtrVoidTy = PointerType::getUnqual(Type::getInt8Ty(M->getContext()));
-  IntegerType *Int32Ty = Type::getInt32Ty(M->getContext());
-  IntegerType *Int64Ty = Type::getInt64Ty(M->getContext());
-
-  for (const Argument &I : F->args()) {
-    ArgTypes.push_back(I.getType());
-  }
-  // add index argument to shadow slice
-  ArgTypes.push_back(Int32Ty);
-
-  FunctionType *FTy = F->getFunctionType();
-
-  std::vector<Type *> Params(FTy->param_begin(), FTy->param_end());
-  unsigned NumArgs = Params.size();
-
-  FunctionType *NFTy = FunctionType::get(FTy->getReturnType(), ArgTypes, false);
-  // Create the new function body and insert it into the module...
-  Function *NewFn =
-      Function::Create(NFTy, F->getLinkage(), F->getAddressSpace());
-  NewFn->copyAttributesFrom(F);
-  NewFn->setComdat(F->getComdat());
-  F->getParent()->getFunctionList().insert(F->getIterator(), NewFn);
-  NewFn->takeName(F);
-
-  // Loop over all of the callers of the function, transforming the call sites
-  // to pass in a larger number of arguments into the new function.
-  std::vector<Value *> Args;
-  for (Value::user_iterator I = F->user_begin(), E = F->user_end(); I != E;) {
-    CallSite CS(*I++);
-    if (!CS)
-      continue;
-    Instruction *Call = CS.getInstruction();
-    Function *ParentFun = Call->getParent()->getParent();
-    Value *Idx;
-    if (CallIdxMap.count(dyn_cast<CallInst>(Call)) != 0) {
-      Idx = dyn_cast<Value>(CallIdxMap.at(dyn_cast<CallInst>(Call)));
-    } else {
-      Idx = BufIdxMap.at(ParentFun);
-    }
-    Args.assign(CS.arg_begin(), CS.arg_begin() + NumArgs);
-    Args.push_back(Idx);
-    SmallVector<OperandBundleDef, 1> OpBundles;
-    CS.getOperandBundlesAsDefs(OpBundles);
-
-    CallSite NewCS;
-    if (InvokeInst *II = dyn_cast<InvokeInst>(Call)) {
-      NewCS =
-          InvokeInst::Create(NewFn, II->getNormalDest(), II->getUnwindDest(),
-                             Args, OpBundles, "", Call);
-    } else {
-      NewCS = CallInst::Create(NewFn, Args, OpBundles, "", Call);
-      cast<CallInst>(NewCS.getInstruction())
-          ->setTailCallKind(cast<CallInst>(Call)->getTailCallKind());
-    }
-    NewCS.setCallingConv(CS.getCallingConv());
-    NewCS->setDebugLoc(Call->getDebugLoc());
-    uint64_t W;
-
-    if (Call->extractProfTotalWeight(W))
-      NewCS->setProfWeight(W);
-
-    Args.clear();
-
-    if (!Call->use_empty())
-      Call->replaceAllUsesWith(NewCS.getInstruction());
-
-    NewCS->takeName(Call);
-    // Finally, remove the old call from the program, reducing the use-count of F
-    Call->eraseFromParent();
-  }
-  NewFn->getBasicBlockList().splice(NewFn->begin(), F->getBasicBlockList());
-
-  for (Function::arg_iterator I = F->arg_begin(), E = F->arg_end(),
-                              I2 = NewFn->arg_begin();
-       I != E; ++I, ++I2) {
-    // Move the name and users over to the new version.
-    I->replaceAllUsesWith(&*I2);
-    I2->takeName(&*I);
-  }
-  SmallVector<std::pair<unsigned, MDNode *>, 1> MDs;
-  F->getAllMetadata(MDs);
-  for (auto MD : MDs)
-    NewFn->addMetadata(MD.first, *MD.second);
-  // Fix up any BlockAddresses that refer to the function.
-  F->replaceAllUsesWith(ConstantExpr::getBitCast(NewFn, F->getType()));
-  NewFn->removeDeadConstantUsers();
-  F->eraseFromParent();
-  return NewFn;
 }
 
 Function *FPSanitizer::removeArgs(Function *F, Function *OldF, Value *BufAddr) {
@@ -3873,30 +4243,26 @@ Function *FPSanitizer::removeArgs(Function *F, Function *OldF, Value *BufAddr) {
   for (Function::arg_iterator I = F->arg_begin(), E = F->arg_end(); I != E;
        ++I) {
     if(i<size){
-    Value *BOGEP;
-    //    if(I->getType() == MPtrTy){
-    FuncInit = M->getOrInsertFunction(
-        "fpsanx_pull_value_d", Type::getDoubleTy(M->getContext()), Int32Ty);
-    //Value *FloatVal = IRB.CreateCall(FuncInit, {Idx});
-    Value *FloatVal = readFromBuf(First, &BB, NewFn);
-    Argument *A = &*I;
-    BOGEP = ArgMap.at(A);
+      Value *BOGEP;
+      Value *FloatVal = readFromBuf(First, &BB, NewFn);
+      Argument *A = &*I;
+      BOGEP = ArgMap.at(A);
 
-    ConstantInt *instId = GetInstId(F, FFirst);
-    FuncInit =
+      ConstantInt *instId = GetInstId(F, FFirst);
+      FuncInit =
         M->getOrInsertFunction("fpsanx_init_mpfr", VoidTy, Int32Ty, MPtrTy);
-    IRB.CreateCall(FuncInit, {Idx, BOGEP});
+      IRB.CreateCall(FuncInit, {Idx, BOGEP});
 
-    FuncInit = M->getOrInsertFunction(
-        "fpsanx_store_tempmeta_dconst_val", VoidTy, Int32Ty, MPtrTy, Type::getDoubleTy(M->getContext()), 
-        instId->getType(), Int32Ty);
-    ConstantInt *lineNumber = ConstantInt::get(Int32Ty, 0);
-    IRB.CreateCall(FuncInit, {Idx, BOGEP, FloatVal, instId, lineNumber});
-    FuncInit = M->getOrInsertFunction("fpsanx_clear_mpfr", VoidTy, MPtrTy);
-    IRBE.CreateCall(FuncInit, {BOGEP});
-    I->replaceAllUsesWith(BOGEP);
-    i++;
-  }
+      FuncInit = M->getOrInsertFunction(
+          "fpsanx_store_tempmeta_dconst_val", VoidTy, Int32Ty, MPtrTy, Type::getDoubleTy(M->getContext()), 
+          instId->getType(), Int32Ty);
+      ConstantInt *lineNumber = ConstantInt::get(Int32Ty, 0);
+      IRB.CreateCall(FuncInit, {Idx, BOGEP, FloatVal, instId, lineNumber});
+      FuncInit = M->getOrInsertFunction("fpsanx_clear_mpfr", VoidTy, MPtrTy);
+      IRBE.CreateCall(FuncInit, {BOGEP});
+      I->replaceAllUsesWith(BOGEP);
+      i++;
+    }
   }
   NewFn->getBasicBlockList().splice(NewFn->begin(), F->getBasicBlockList());
   NewFn->takeName(F);
@@ -4052,7 +4418,6 @@ void FPSanitizer::CloneFunctionArgs(
   SmallVector<AttributeSet, 4> NewArgAttrs(NewFunc->arg_size());
   AttributeList OldAttrs = OldFunc->getAttributes();
 
-  // OldAttrs.remove(AttributeFuncs::typeIncompatible(NewFunNewFuncc->getFunctionType()->getReturnType()));
   NewFunc->setAttributes(
       AttributeList::get(NewFunc->getContext(), OldAttrs.getFnAttributes(),
                          OldAttrs.getRetAttributes(), NewArgAttrs));
@@ -4159,7 +4524,6 @@ void FPSanitizer::CloneFunction(
   SmallVector<AttributeSet, 4> NewArgAttrs(NewFunc->arg_size());
   AttributeList OldAttrs = OldFunc->getAttributes();
 
-  // OldAttrs.remove(AttributeFuncs::typeIncompatible(NewFunNewFuncc->getFunctionType()->getReturnType()));
   NewFunc->setAttributes(
       AttributeList::get(NewFunc->getContext(), OldAttrs.getFnAttributes(),
                          OldAttrs.getRetAttributes(), NewArgAttrs));
@@ -4215,14 +4579,6 @@ void FPSanitizer::CloneFunction(
                                               const_cast<BasicBlock *>(&BB));
       VMap[OldBBAddr] = BlockAddress::get(NewFunc, CBB);
     }
-
-    // Note return instructions for the caller.
-    /*
-    if (ReturnInst *RI = dyn_cast<ReturnInst>(CBB->getTerminator())){
-      ReturnInst *NewRI = ReturnInst::Create(OldFunc->getContext(), nullptr,
-    RI); RI->eraseFromParent(); Returns.push_back(NewRI);
-    }
-    */
   }
 
   for (DISubprogram *ISP : DIFinder.subprograms())
@@ -4247,7 +4603,6 @@ void FPSanitizer::CloneFunction(
                        ModuleLevelChanges ? RF_None : RF_NoModuleLevelChanges,
                        TypeMapper, Materializer);
     }
-  // Change call instruction to call shadow function if available
 }
 
 #endif
@@ -4259,16 +4614,25 @@ bool FPSanitizer::runOnModule(Module &M) {
 
   LLVMContext &C = M.getContext();
 
+  Type *PtrDoubleTy = PointerType::getUnqual(Type::getDoubleTy(M.getContext()));
+  CurIndex = new GlobalVariable(M, PtrDoubleTy, false, GlobalVariable::InternalLinkage, 
+      Constant::getNullValue(PtrDoubleTy), "my_cur_idx");
+  CurIndex->setThreadLocalMode(GlobalVariable::LocalExecTLSModel);
+
+  CCurIndex = new GlobalVariable(M, PtrDoubleTy, false, GlobalVariable::InternalLinkage, 
+      Constant::getNullValue(PtrDoubleTy), "my_cur_idx_c");
+  CCurIndex->setThreadLocalMode(GlobalVariable::LocalExecTLSModel);
+
   SliceFlag = new GlobalVariable(M, Type::getInt8Ty(M.getContext()), false, GlobalVariable::InternalLinkage, 
       Constant::getNullValue(Type::getInt8Ty(M.getContext())), "my_slice_flag");
 
   QIdx = new GlobalVariable(M, Type::getInt64Ty(M.getContext()), false, GlobalValue::PrivateLinkage, 
       Constant::getNullValue(Type::getInt64Ty(M.getContext())), "my_global_queue_idx");
+  QIdx->setThreadLocalMode(GlobalVariable::LocalExecTLSModel);
 
   CQIdx = new GlobalVariable(M, Type::getInt64Ty(M.getContext()), false, GlobalVariable::PrivateLinkage, 
       Constant::getNullValue(Type::getInt64Ty(M.getContext())), "my_consumer_queue_idx");
   CQIdx->setThreadLocalMode(GlobalVariable::LocalExecTLSModel);
-  //CQIdx->setThreadLocalMode(GlobalVariable::LocalDynamicTLSModel);
 
   StructType *MPFRTy1 = StructType::create(M.getContext(), "struct.fpsan_mpfr");
   MPFRTy1->setBody(
@@ -4300,14 +4664,6 @@ bool FPSanitizer::runOnModule(Module &M) {
 
   MPtrTy = Real->getPointerTo();
 
-  // TODO::Iterate over global arrays to initialize shadow memory
-  for (Module::global_iterator GVI = M.global_begin(), E = M.global_end();
-       GVI != E;) {
-    GlobalVariable *GV = &*GVI++;
-    if (GV->hasInitializer()) {
-      Constant *Init = GV->getInitializer();
-    }
-  }
   // Find functions that perform floating point computation. No
   // instrumentation if the function does not perform any FP
   // computations.
@@ -4319,12 +4675,9 @@ bool FPSanitizer::runOnModule(Module &M) {
         TLI->getLibFunc(F.getName(), Func)) {
       LibFuncList.insert(F.getFunction().getName());
     }
-    else{
-      findInterestingFunctions(&F);
-    }
   }
 
-  SmallVector<Function *, 8> FuncList; // Ignore returns cloned.
+  SmallVector<Function *, 8> FuncList;
   for (auto &F : M) {
     if (F.isDeclaration())
       continue;
@@ -4335,19 +4688,37 @@ bool FPSanitizer::runOnModule(Module &M) {
     }
   }
 
+  Type *VoidTy = Type::getVoidTy(M.getContext());
+  SmallVector<Instruction *, 8> CIList;
   for (Function *F : FuncList) {
+    bool flag = false;
     for (auto &BB : *F) {
       for (auto &I : BB) {
         if (CallInst *CI = dyn_cast<CallInst>(&I)) {
           Function *Callee = CI->getCalledFunction();
           if (Callee) {
             if (Callee->getName().startswith("start_slice")) {
+              //start_slice might not be the first instruction the function, that would
+              //break this pass. 
+              //First lets move the start_slice call to be the first instruction the function
+              BasicBlock::iterator BBit = BB.begin();
+              Instruction *First = &*BBit;
+              IRBuilder<> IRB(First);
+              FuncInit = M.getOrInsertFunction("start_slice",VoidTy);
+              CallInst *NewCI = IRB.CreateCall(FuncInit, {});
+              NewCI->setDebugLoc(CI->getDebugLoc());
+              CIList.push_back(CI);
+              
               SliceList.push_back(F);
             }
           }
         }
       }
     }
+    for (Instruction *Inst : CIList) {
+      Inst->eraseFromParent();
+    }
+    CIList.clear();
   }
   for (Function *F : FuncList) {
     if (F->isDeclaration())
@@ -4360,14 +4731,17 @@ bool FPSanitizer::runOnModule(Module &M) {
     Instruction *First = &*BBit;
     IRBuilder<> IRBB(First);
     Value *BufAddr;
+    Type *PtrDoubleTy = PointerType::getUnqual(Type::getDoubleTy(M.getContext()));
     if (CBufAddrMap.count(NewF) == 0) {
       Type *PtrDoubleTy = PointerType::getUnqual(Type::getDoubleTy(M.getContext()));
       FuncInit = M.getOrInsertFunction("fpsanx_get_buf_addr_c",
                                        PtrDoubleTy);
       BufAddr = IRBB.CreateCall(FuncInit, {});
+      Value *Counter = IRBB.CreateLoad(IRBB.getInt64Ty(), CQIdx, "my_load_idx_c");
     }
     if (std::find(SliceList.begin(), SliceList.end(), F) != SliceList.end()) {
-      // this is the slice, remove arguments
+      // this is the slice, remove arguments from cloned function as 
+      // this function will be called from runtime
       NewF = removeArgs(NewF, F, BufAddr);
     }
     else{
@@ -4397,6 +4771,7 @@ bool FPSanitizer::runOnModule(Module &M) {
         F->getName().startswith("end_slice")) {
       continue;
     }
+    Type *PtrDoubleTy = PointerType::getUnqual(Type::getDoubleTy(M.getContext()));
     FuncInit = M.getOrInsertFunction("fpsanx_get_buf_idx",
                                      Type::getInt32Ty(M.getContext()), PtrVoidTy, PtrVoidTy);
     Function *ShadowFunc = CloneFuncMap.at(F);
@@ -4405,9 +4780,9 @@ bool FPSanitizer::runOnModule(Module &M) {
     BitCastInst *CloneF = new BitCastInst(
           ShadowFunc, PointerType::getUnqual(Type::getInt8Ty(M.getContext())), "",First);
 
-    Type *PtrDoubleTy = PointerType::getUnqual(Type::getDoubleTy(M.getContext()));
     FuncInit = M.getOrInsertFunction("fpsanx_get_buf_addr", PtrDoubleTy, PtrVoidTy, PtrVoidTy);
     Value *BufAddr = IRBB.CreateCall(FuncInit, {OrigF, CloneF});
+    IRBB.CreateStore(BufAddr, CurIndex, "my_store_idx");
     BufAddrMap.insert(std::pair<Function *, Value *>(F, dyn_cast<Value>(BufAddr)));
   }
   for (Function *F : AllFuncList) {
@@ -4436,14 +4811,14 @@ bool FPSanitizer::runOnModule(Module &M) {
     }
     handleBranch(F);
   }
-  Type *VoidTy = Type::getVoidTy(M.getContext());
   // handle producer: push conditions
   for (Function *F : reverse(AllOrigFuncList)) {
-    // TODO handle functions which are not part of slice in producer
-    if (F->getName().endswith("main")) {
-      //      continue;
-    }
     handleSliceFlag(F);
+    //push float args
+    if (std::find(SliceList.begin(), SliceList.end(), F) != SliceList.end()) {
+      createUpdateBlockArg1(F);
+    }
+
     for (auto &BB : *F) {
       if(BB.getName().startswith("update")){
         continue;
@@ -4629,26 +5004,6 @@ bool FPSanitizer::runOnModule(Module &M) {
     }
   }
 
-  // Go over all the callers of the slice and remove the call instruction
-  for (Function *F : reverse(AllFuncList)) {
-    if (std::find(SliceList.begin(), SliceList.end(), F) != SliceList.end()) {
-      for (Value::user_iterator I = F->user_begin(), E = F->user_end();
-           I != E;) {
-        CallSite CS(*I++);
-        if (!CS)
-          continue;
-        Instruction *Call = CS.getInstruction();
-        Call->replaceAllUsesWith(UndefValue::get(Call->getType()));
-        for (auto UI = Call->user_begin(), UE = Call->user_end(); UI != UE;) {
-          Instruction *I = cast<Instruction>(*UI);
-          ++UI;
-          I->eraseFromParent();
-        }
-        Call->eraseFromParent();
-      }
-    }
-  }
-
   for (Function *F : AllFuncList) {
     if (F->getName().startswith("start_slice") ||
         F->getName().startswith("end_slice")) {
@@ -4657,13 +5012,107 @@ bool FPSanitizer::runOnModule(Module &M) {
     RemoveEveryThingButFloat(F);
   }
 
+
+  for (Function *F : AllFuncList) {
+    Argument *A;
+    for (Function::arg_iterator ait = F->arg_begin(), aend = F->arg_end();
+        ait != aend; ++ait) {
+      A = &*ait;
+    }
+    Type *Int64Ty = Type::getInt64Ty(M.getContext());
+    SmallVector<Instruction *, 8> CIList;
+    for (auto &BB : *F) {
+      for (auto &I : BB) {
+        if (CallInst *CI = dyn_cast<CallInst>(&I)) {
+          Function *Callee = CI->getCalledFunction();
+          if (Callee && Callee->getName().startswith("start_slice")) {
+            IRBuilder<> IRB(CI);
+            Finish = M.getOrInsertFunction("fpsan_shadow_slice_start", VoidTy, A->getType());
+            IRB.CreateCall(Finish, {A});
+            CIList.push_back(CI);
+          }
+          else if (Callee && Callee->getName().startswith("end_slice")) {
+            IRBuilder<> IRB(CI);
+            Finish = M.getOrInsertFunction("fpsan_shadow_slice_end", VoidTy, A->getType());
+            IRB.CreateCall(Finish, {A});
+            IRB.CreateStore(ConstantInt::get(Int64Ty, 0), CQIdx, "my_store_idx");
+            CIList.push_back(CI);
+          }
+        }
+      }
+    }
+    for (Instruction *Inst : CIList) {
+      Inst->eraseFromParent();
+    }
+    CIList.clear();
+  }
+
   for (Instruction *Inst : AllInstList) {
     Inst->replaceAllUsesWith(UndefValue::get(Inst->getType()));
     Inst->eraseFromParent();
   }
 
+
+  for (Function *F : AllFuncList) {
+    if (F->getName().startswith("start_slice") ||
+        F->getName().startswith("end_slice")) {
+      continue;
+    }
+    for (auto &BB : *F) {
+      if(BB.getName().startswith("update")){
+        continue;
+      }
+      for (auto &I : BB) {
+        Value *V = dyn_cast<Value>(&I);
+        if(V->getName().startswith("my_load_idx_c")){
+          splitReadFromBuf(&I, &BB, F);
+        }
+      }
+    }
+  }
+  for (Function *F : AllFuncList) {
+    if (F->getName().startswith("start_slice_shadow") ||
+        F->getName().startswith("end_slice_shadow")) {
+      continue;
+    }
+    Function::iterator Fit = F->begin();
+    BasicBlock &B = *Fit;
+    BasicBlock::iterator BBit = B.begin();
+    Instruction *First = &*BBit;
+    IRBuilder<> IRBB(First);
+    Type *PtrDoubleTy = PointerType::getUnqual(Type::getDoubleTy(M.getContext()));
+    for (auto &BB : *F) {
+      for (auto &I : BB) {
+        if(CallInst *CI = dyn_cast<CallInst>(&I)){
+          Function *Callee = CI->getCalledFunction();
+          if (Callee && Callee->getName().startswith("fpsanx_get_buf_addr_c")) {
+            IRBuilder<> IRB(CI->getNextNode());
+            IRB.CreateStore(CI, CCurIndex, "my_store_idx");
+          }
+        }
+      }
+      for (auto &I : BB) {
+        Value *V = dyn_cast<Value>(&I);
+        if(CallInst *CI = dyn_cast<CallInst>(&I)){
+          Function *Callee = CI->getCalledFunction();
+          if (Callee && Callee->getName().startswith("fpsanx_shadow_task_interim")) {
+            IRBuilder<> IRBN(CI->getNextNode());
+            IRBN.CreateStore(CI, CCurIndex, "my_store_idx");
+          }
+        }
+        if(V->getName().startswith("my_gep_buf_c")){
+          if(BB.getName().startswith("split")){
+            loadIdx(&I, &BB, F);
+          }
+        }
+      }
+    }
+    CBufPtrMap.clear();
+  }
+
   for (Function *F : reverse(AllOrigFuncList)) {
-    // handle producer: push fpvalues
+  // handle producer: push fpvalues
+  
     for (auto &BB : *F) {
       if(BB.getName().startswith("update")){
         continue;
@@ -4697,63 +5146,10 @@ bool FPSanitizer::runOnModule(Module &M) {
         } 
       }
     }
-    //Delete load and store for update block and use local variable
-    //This should be done once all split blocks have been created
-    bool sliceF = false;
-    for (auto &BB : *F) {
-      createPhiCounter(&BB);
-    }
-    for (auto &BB : *F) {
-      for (auto &I : BB) {
-        if(CallInst *CI = dyn_cast<CallInst>(&I)){
-          Function *Callee = CI->getCalledFunction();
-          if (Callee && Callee->getName().startswith("end_slice")) {
-            sliceF = true;
-          }
-        }
-      }
-    }
-    for (auto &BB : *F) {
-      for (auto &I : BB) {
-        if (ReturnInst *RI = dyn_cast<ReturnInst>(&I)) {
-          if(!sliceF){
-            handleStoreIdxProducer(&I, &BB, F);
-          }
-        }
-        else if(CallInst *CI = dyn_cast<CallInst>(&I)){
-          Function *Callee = CI->getCalledFunction();
-          CallSite CS(&I);
-          if(Callee && !CS.isIndirectCall()){
-            if (Callee->isDeclaration())
-              continue;
-            if (!(Callee->getName().startswith("fpsan") || 
-                Callee->getName().startswith("start_slice") ||
-                Callee->getName().startswith("end_slice"))){
-              handleStoreIdxProducerCallInst(&I, &BB, F);
-            }
-          }
-          else {
-            handleStoreIdxProducerCallInst(&I, &BB, F);
-          }
-        }
-      }
-    }
-    
-    for (auto &BB : *F) {
-      propagatePhiCounter(&BB);
-    }
-    for (auto &BB : *F) {
-      updateUpdateBlock(&BB);
-    }
-    for (auto &BB : *F) {
-      addIncomingPhi(&BB);
-    }
-    
   }
   QIdxMap.clear();
-
   //remove cmp block for slices
-#if 1
+  
   SmallVector<Instruction *, 8> BrList;
   for (Function *F : reverse(AllOrigFuncList)) {
     bool sliceF = false;
@@ -4798,36 +5194,7 @@ bool FPSanitizer::runOnModule(Module &M) {
     }
     BrList.clear();
   }
-#endif
 
-  FuncList.clear();
-  for (auto &F : M) {
-    if (F.getName().startswith("start_slice") && F.getName().endswith("shadow") ) {
-      FuncList.push_back(&F);
-    }
-  }
-
-  for (Function *F : FuncList) {
-    // add buf index to slice_end
-    F = addIndexProducer(F);
-    // call fpsan_slice_end so that it can push the end token
-    handleStartSliceC(F);
-  }
-
-  FuncList.clear();
-  for (auto &F : M) {
-    if (F.getName().startswith("end_slice") && F.getName().endswith("shadow") ) {
-      FuncList.push_back(&F);
-    }
-  }
-  for (Function *F : FuncList) {
-    // add buf index to slice_end
-    F = addIndexProducer(F);
-    // call fpsan_slice_end so that it can push the end token
-    handleEndSliceC(F);
-  }
-
-//  errs()<<"full:"<<M<<"\n";
   return true;
 }
 
